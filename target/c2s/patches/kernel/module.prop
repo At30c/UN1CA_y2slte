@@ -1,0 +1,4 @@
+id=kernel
+name=Add Artisan Kernel support
+author=miguelbarretoo, Android-Artisan
+description=Add Artisan Kernel support to device without building
