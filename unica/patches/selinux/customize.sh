@@ -59,6 +59,31 @@ CIL_NAME="$(head -n 1 "$WORK_DIR/vendor/etc/selinux/plat_sepolicy_vers.txt")"
 PATCHED=false
 SYSTEM_EXT_SELINUX="$WORK_DIR/$(GET_SYSTEM_EXT)/etc/selinux"
 
+# Android 17 no longer labels the legacy ION node because current devices use
+# DMA-BUF heaps. Exynos 990's gralloc 2.0 allocator still opens /dev/ion; when
+# left as the generic "device" type SELinux rejects the open even though the
+# node is mode 0666. Restore the public legacy label expected by vendor policy.
+VENDOR_FILE_CONTEXTS="$WORK_DIR/vendor/etc/selinux/vendor_file_contexts"
+if ! grep -qE '^[[:space:]]*/dev/ion[[:space:]]+u:object_r:ion_device:s0([[:space:]]|$)' \
+        "$VENDOR_FILE_CONTEXTS"; then
+    sed -i -E '/^[[:space:]]*\/dev\/ion([[:space:]]|$)/d' "$VENDOR_FILE_CONTEXTS"
+    printf '%s\n' '/dev/ion    u:object_r:ion_device:s0' >> "$VENDOR_FILE_CONTEXTS"
+    PATCHED=true
+fi
+
+# The Android 17 platform policy grants the graphics allocator access only to
+# DMA-BUF heaps. The Exynos 990 allocator predates that interface and performs
+# its allocations through ION, so restore the corresponding Android 11 rule in
+# the target vendor policy. Keep this scoped to the allocator HAL instead of
+# granting generic access to every process or to the generic device type.
+VENDOR_SEPOLICY="$WORK_DIR/vendor/etc/selinux/vendor_sepolicy.cil"
+ION_ALLOCATOR_TYPE="ion_device_${CIL_NAME//./_}"
+ION_ALLOCATOR_RULE="(allow hal_graphics_allocator $ION_ALLOCATOR_TYPE (chr_file (ioctl read write getattr lock append map open watch watch_reads)))"
+if ! grep -qF "$ION_ALLOCATOR_RULE" "$VENDOR_SEPOLICY"; then
+    printf '%s\n' "$ION_ALLOCATOR_RULE" >> "$VENDOR_SEPOLICY"
+    PATCHED=true
+fi
+
 # Android 17 sources no longer ship the Android 10/11 compatibility mappings
 # required by the Exynos 990 vendor policy. They must exist in system_ext
 # before the removal pass below reads the target vendor's CIL version.
@@ -129,5 +154,6 @@ if ! $PATCHED; then
     LOG "\033[0;33m! Nothing to do\033[0m"
 fi
 
-unset ENTRIES DUPLICATES CIL_NAME CIL_FILE PATCHED SYSTEM_EXT_SELINUX VENDOR_API_LIST LEGACY_MAPPING
+unset ENTRIES DUPLICATES CIL_NAME CIL_FILE PATCHED SYSTEM_EXT_SELINUX VENDOR_FILE_CONTEXTS VENDOR_SEPOLICY
+unset ION_ALLOCATOR_TYPE ION_ALLOCATOR_RULE VENDOR_API_LIST LEGACY_MAPPING
 unset -f GET_SYSTEM_EXT

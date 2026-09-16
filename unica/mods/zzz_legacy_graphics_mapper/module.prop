@@ -1,0 +1,6 @@
+id=legacy_graphics_mapper
+name=Legacy graphics mapper fallback
+version=1.0
+versionCode=1
+author=At30c
+description=Restores the built-in Gralloc 3/2 fallback on Android 16+ systems paired with legacy vendors.

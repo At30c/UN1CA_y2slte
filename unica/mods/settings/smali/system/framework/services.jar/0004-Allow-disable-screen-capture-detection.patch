@@ -5,8 +5,8 @@ Subject: [PATCH] Allow disable screen capture detection
 
 ---
  .../ScreenRecordingCallbackController.smali   | 21 ++++++++++
- .../server/wm/WindowManagerService.smali      | 42 +++++++++++++++++++
- 2 files changed, 63 insertions(+)
+ .../server/wm/WindowManagerService.smali      | 38 +++++++++++++++++
+ 2 files changed, 59 insertions(+)
 
 diff --git a/smali_classes2/com/android/server/wm/ScreenRecordingCallbackController.smali b/smali_classes2/com/android/server/wm/ScreenRecordingCallbackController.smali
 index 9e1c2db..481f133 100644
@@ -44,7 +44,7 @@ diff --git a/smali_classes2/com/android/server/wm/WindowManagerService.smali b/s
 index 310735b..dd47b74 100644
 --- a/smali_classes2/com/android/server/wm/WindowManagerService.smali
 +++ b/smali_classes2/com/android/server/wm/WindowManagerService.smali
-@@ -11967,6 +11967,29 @@
+@@ -11967,6 +11967,25 @@
  
      if-eqz v0, :cond_1
  
@@ -56,19 +56,15 @@ index 310735b..dd47b74 100644
 +
 +    const-string v1, "unica_ss_detection"
 +
-+    const/4 v3, 0x0
++    const/4 v2, 0x0
 +
-+    invoke-static {v0, v1, v3}, Landroid/provider/Settings$System;->getInt(Landroid/content/ContentResolver;Ljava/lang/String;I)I
++    invoke-static {v0, v1, v2}, Landroid/provider/Settings$System;->getInt(Landroid/content/ContentResolver;Ljava/lang/String;I)I
 +
 +    move-result v0
 +
 +    if-eqz v0, :unica_ss_notify
 +
-+    invoke-static {}, Ljava/util/Collections;->emptyList()Ljava/util/List;
-+
-+    move-result-object p0
-+
-+    return-object p0
++    return-void
 +
 +    :unica_ss_notify
      iget-object v0, p0, Lcom/android/server/wm/WindowManagerService;->mGlobalLock:Lcom/android/server/wm/WindowManagerGlobalLock;
