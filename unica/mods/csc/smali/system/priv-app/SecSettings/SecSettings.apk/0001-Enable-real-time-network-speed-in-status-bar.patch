@@ -9,10 +9,10 @@ Subject: [PATCH] Enable real time network speed in status bar
  .../provider/items/NotificationsItem.smali    | 26 +++----------------
  3 files changed, 8 insertions(+), 46 deletions(-)
 
-diff --git a/smali_classes5/com/samsung/android/settings/eternal/provider/items/NotificationsItem.smali b/smali_classes5/com/samsung/android/settings/eternal/provider/items/NotificationsItem.smali
+diff --git a/smali_classes3/com/samsung/android/settings/eternal/provider/items/NotificationsItem.smali b/smali_classes3/com/samsung/android/settings/eternal/provider/items/NotificationsItem.smali
 index c8057ac1..ab3e9d0a 100644
---- a/smali_classes5/com/samsung/android/settings/eternal/provider/items/NotificationsItem.smali
-+++ b/smali_classes5/com/samsung/android/settings/eternal/provider/items/NotificationsItem.smali
+--- a/smali_classes3/com/samsung/android/settings/eternal/provider/items/NotificationsItem.smali
++++ b/smali_classes3/com/samsung/android/settings/eternal/provider/items/NotificationsItem.smali
 @@ -509,22 +509,14 @@
 
      if-eqz v2, :cond_0
@@ -41,7 +41,7 @@ index c8057ac1..ab3e9d0a 100644
      move-result v0
 @@ -2054,17 +2046,7 @@
 
-     if-eqz v0, :cond_d
+     if-eqz v0, :cond_f
 
 -    invoke-static {}, Lcom/samsung/android/feature/SemCscFeature;->getInstance()Lcom/samsung/android/feature/SemCscFeature;
 -
@@ -58,10 +58,10 @@ index c8057ac1..ab3e9d0a 100644
 
      if-eqz v0, :cond_4
 
-diff --git a/smali_classes5/com/samsung/android/settings/notification/ConfigureNotificationMoreSettings$1.smali b/smali_classes5/com/samsung/android/settings/notification/ConfigureNotificationMoreSettings$1.smali
+diff --git a/smali_classes3/com/samsung/android/settings/notification/ConfigureNotificationMoreSettings$1.smali b/smali_classes3/com/samsung/android/settings/notification/ConfigureNotificationMoreSettings$1.smali
 index 01cc6d93..fa9006fb 100644
---- a/smali_classes5/com/samsung/android/settings/notification/ConfigureNotificationMoreSettings$1.smali
-+++ b/smali_classes5/com/samsung/android/settings/notification/ConfigureNotificationMoreSettings$1.smali
+--- a/smali_classes3/com/samsung/android/settings/notification/ConfigureNotificationMoreSettings$1.smali
++++ b/smali_classes3/com/samsung/android/settings/notification/ConfigureNotificationMoreSettings$1.smali
 @@ -5,7 +5,7 @@
 
  # virtual methods
@@ -90,10 +90,10 @@ index 01cc6d93..fa9006fb 100644
 
      if-nez v0, :cond_2
 
-diff --git a/smali_classes5/com/samsung/android/settings/notification/StatusBarNetworkSpeedController.smali b/smali_classes5/com/samsung/android/settings/notification/StatusBarNetworkSpeedController.smali
+diff --git a/smali_classes3/com/samsung/android/settings/notification/StatusBarNetworkSpeedController.smali b/smali_classes3/com/samsung/android/settings/notification/StatusBarNetworkSpeedController.smali
 index b96ad489..2a2236ad 100644
---- a/smali_classes5/com/samsung/android/settings/notification/StatusBarNetworkSpeedController.smali
-+++ b/smali_classes5/com/samsung/android/settings/notification/StatusBarNetworkSpeedController.smali
+--- a/smali_classes3/com/samsung/android/settings/notification/StatusBarNetworkSpeedController.smali
++++ b/smali_classes3/com/samsung/android/settings/notification/StatusBarNetworkSpeedController.smali
 @@ -22,19 +22,9 @@
 
  # direct methods

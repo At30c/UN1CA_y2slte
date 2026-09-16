@@ -32,7 +32,7 @@ index 8bd844f2..ae19591f 100644
      sget-boolean p1, Lcom/samsung/android/rune/PMRune;->PM_BADGE_ON_MONETIZED_APP_SUPPORTED:Z
  
      if-eqz p1, :cond_0
-@@ -163,6 +177,34 @@
+@@ -163,4 +177,32 @@
      return-void
  .end method
  
@@ -65,8 +65,6 @@ index 8bd844f2..ae19591f 100644
 +.end method
 +
  .method public static hasLauncherEntry(Lcom/android/internal/pm/parsing/pkg/ParsedPackage;)Z
-     .locals 6
- 
 @@ -22501,7 +22543,9 @@
  
      const/4 v9, 0x1
@@ -98,9 +96,9 @@ index 8bd844f2..ae19591f 100644
 +    move-result-object v14
 +
 +    invoke-static {v1, v2, v5, v14}, Lcom/android/server/pm/ScanPackageUtils;->setCustomSignatures(Lcom/android/internal/pm/parsing/pkg/ParsedPackage;Lcom/android/server/pm/pkg/AndroidPackage;[Landroid/content/pm/Signature;[Landroid/content/pm/Signature;)V
-     :try_end_c
-     .catch Lcom/android/server/pm/PackageManagerException; {:try_start_c .. :try_end_c} :catch_1
-     .catchall {:try_start_c .. :try_end_c} :catchall_4
+     :try_end_10
+     .catch Lcom/android/server/pm/PackageManagerException; {:try_start_10 .. :try_end_10} :catch_1
+     .catchall {:try_start_10 .. :try_end_10} :catchall_4
 @@ -23995,7 +24055,9 @@
  
      iget-object v2, v2, Lcom/android/server/pm/PackageManagerService;->mPlatformPackage:Lcom/android/server/pm/pkg/AndroidPackage;

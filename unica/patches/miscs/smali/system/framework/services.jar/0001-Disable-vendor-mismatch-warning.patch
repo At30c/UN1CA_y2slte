@@ -4,13 +4,13 @@ Date: Thu, 5 Apr 2018 10:01:19 +0800
 Subject: [PATCH] Disable vendor mismatch warning
 
 ---
- ...gerService$$ExternalSyntheticLambda8.smali | 18 +-----------------
+ ...gerService$$ExternalSyntheticLambda7.smali | 18 +-----------------
  1 file changed, 1 insertion(+), 17 deletions(-)
 
-diff --git a/smali/com/android/server/am/ActivityManagerService$$ExternalSyntheticLambda8.smali b/smali/com/android/server/am/ActivityManagerService$$ExternalSyntheticLambda8.smali
---- a/smali/com/android/server/am/ActivityManagerService$$ExternalSyntheticLambda8.smali
-+++ b/smali/com/android/server/am/ActivityManagerService$$ExternalSyntheticLambda8.smali
-@@ -167,25 +167,9 @@
+diff --git a/smali/com/android/server/am/ActivityManagerService$$ExternalSyntheticLambda7.smali b/smali/com/android/server/am/ActivityManagerService$$ExternalSyntheticLambda7.smali
+--- a/smali/com/android/server/am/ActivityManagerService$$ExternalSyntheticLambda7.smali
++++ b/smali/com/android/server/am/ActivityManagerService$$ExternalSyntheticLambda7.smali
+@@ -179,25 +179,9 @@
      :try_start_3
      const-string v2, "ActivityTaskManager"
  
@@ -25,7 +25,7 @@ diff --git a/smali/com/android/server/am/ActivityManagerService$$ExternalSynthet
 -
 -    new-instance v4, Lcom/android/server/wm/ActivityTaskManagerService$LocalService$$ExternalSyntheticLambda4;
 -
--    const/4 v5, 0x2
+-    const/4 v5, 0x3
 -
 -    invoke-direct {v4, v5}, Lcom/android/server/wm/ActivityTaskManagerService$LocalService$$ExternalSyntheticLambda4;-><init>(I)V
 -

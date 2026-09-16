@@ -1,12 +1,12 @@
-From 4cc0c05c3f1164faf301c55c0f143a1979f6724c Mon Sep 17 00:00:00 2001
-From: Salvo Giangreco <giangrecosalvo9@gmail.com>
-Date: Mon, 6 Oct 2025 15:12:32 +0200
+From a726ad30b00d3500499283e34b43cef00a1e7156 Mon Sep 17 00:00:00 2001
+From: At30c <PabloAtsoc9993@outlook.com>
+Date: Wed, 16 Sep 2026 00:41:28 -0300
 Subject: [PATCH] Introduce KeyboxImitationHooks
 
 ---
  .../android/security/KeyStore2.smali          |    8 +-
  .../IKeystoreSecurityLevel$Stub$Proxy.smali   |   52 +-
- .../IKeystoreService$Stub$Proxy.smali         |  108 +-
+ .../IKeystoreService$Stub$Proxy.smali         |   76 +
  .../provider/asymmetric/EC$Mappings.smali     |   14 +-
  .../io/mesalabs/unica/IKeyboxProvider.smali   |   20 +
  ...roviderManager$DefaultKeyboxProvider.smali |  709 ++++
@@ -25,27 +25,27 @@ Subject: [PATCH] Introduce KeyboxImitationHooks
  .../mesalabs/unica/KeyboxOperationUtils.smali |  158 +
  ...eyboxUtils$$ExternalSyntheticLambda0.smali |   30 +
  .../io/mesalabs/unica/KeyboxUtils.smali       | 2372 +++++++++++
- 21 files changed, 11637 insertions(+), 28 deletions(-)
- create mode 100644 smali_classes6/io/mesalabs/unica/IKeyboxProvider.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyProviderManager$DefaultKeyboxProvider.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyProviderManager-IA.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyProviderManager.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyboxChainGenerator$Digest.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyboxChainGenerator$KeyGenParameters.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyboxChainGenerator.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyboxDbHelper.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyboxImitationHooks$1.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyboxImitationHooks.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$BaseOperation.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$DecryptOperation.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$KeyAgreementOperation.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$SignOperation.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyboxOperationUtils.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyboxUtils$$ExternalSyntheticLambda0.smali
- create mode 100644 smali_classes6/io/mesalabs/unica/KeyboxUtils.smali
+ 21 files changed, 11621 insertions(+), 12 deletions(-)
+ create mode 100644 smali_classes7/io/mesalabs/unica/IKeyboxProvider.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyProviderManager$DefaultKeyboxProvider.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyProviderManager-IA.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyProviderManager.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyboxChainGenerator$Digest.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyboxChainGenerator$KeyGenParameters.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyboxChainGenerator.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyboxDbHelper.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyboxImitationHooks$1.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyboxImitationHooks.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$BaseOperation.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$DecryptOperation.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$KeyAgreementOperation.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$SignOperation.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyboxOperationUtils.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyboxUtils$$ExternalSyntheticLambda0.smali
+ create mode 100644 smali_classes7/io/mesalabs/unica/KeyboxUtils.smali
 
 diff --git a/smali_classes3/android/security/KeyStore2.smali b/smali_classes3/android/security/KeyStore2.smali
-index 80753521..217b4e3c 100644
+index e913b7a..9415747 100644
 --- a/smali_classes3/android/security/KeyStore2.smali
 +++ b/smali_classes3/android/security/KeyStore2.smali
 @@ -558,7 +558,7 @@
@@ -72,7 +72,7 @@ index 80753521..217b4e3c 100644
      return-object v0
  .end method
 diff --git a/smali_classes4/android/system/keystore2/IKeystoreSecurityLevel$Stub$Proxy.smali b/smali_classes4/android/system/keystore2/IKeystoreSecurityLevel$Stub$Proxy.smali
-index 3f9a0c3e..09d89d0b 100644
+index 2a28fff..de8ca2e 100644
 --- a/smali_classes4/android/system/keystore2/IKeystoreSecurityLevel$Stub$Proxy.smali
 +++ b/smali_classes4/android/system/keystore2/IKeystoreSecurityLevel$Stub$Proxy.smali
 @@ -145,6 +145,15 @@
@@ -212,7 +212,7 @@ index 3f9a0c3e..09d89d0b 100644
      new-instance p0, Landroid/os/RemoteException;
  
 diff --git a/smali_classes4/android/system/keystore2/IKeystoreService$Stub$Proxy.smali b/smali_classes4/android/system/keystore2/IKeystoreService$Stub$Proxy.smali
-index 2bf02c02..0526df77 100644
+index bf76de8..a211603 100644
 --- a/smali_classes4/android/system/keystore2/IKeystoreService$Stub$Proxy.smali
 +++ b/smali_classes4/android/system/keystore2/IKeystoreService$Stub$Proxy.smali
 @@ -62,6 +62,15 @@
@@ -223,32 +223,14 @@ index 2bf02c02..0526df77 100644
 +
 +    move-result v0
 +
-+    if-eqz v0, :cond_0
++    if-eqz v0, :unica_keybox_delete_continue
 +
 +    return-void
 +
-+    :cond_0
++    :unica_keybox_delete_continue
      invoke-virtual {p0}, Landroid/system/keystore2/IKeystoreService$Stub$Proxy;->asBinder()Landroid/os/IBinder;
  
      move-result-object v0
-@@ -91,7 +100,7 @@
- 
-     move-result p0
- 
--    if-eqz p0, :cond_0
-+    if-eqz p0, :cond_1
- 
-     invoke-virtual {v1}, Landroid/os/Parcel;->readException()V
-     :try_end_0
-@@ -103,7 +112,7 @@
- 
-     return-void
- 
--    :cond_0
-+    :cond_1
-     :try_start_1
-     new-instance p0, Landroid/os/RemoteException;
- 
 @@ -307,6 +316,15 @@
          }
      .end annotation
@@ -257,32 +239,14 @@ index 2bf02c02..0526df77 100644
 +
 +    move-result-object v0
 +
-+    if-eqz v0, :cond_0
++    if-eqz v0, :unica_keybox_get_entry_continue
 +
 +    return-object v0
 +
-+    :cond_0
++    :unica_keybox_get_entry_continue
      invoke-virtual {p0}, Landroid/system/keystore2/IKeystoreService$Stub$Proxy;->asBinder()Landroid/os/IBinder;
  
      move-result-object v0
-@@ -336,7 +354,7 @@
- 
-     move-result p0
- 
--    if-eqz p0, :cond_0
-+    if-eqz p0, :cond_1
- 
-     invoke-virtual {v1}, Landroid/os/Parcel;->readException()V
- 
-@@ -356,7 +374,7 @@
- 
-     return-object p0
- 
--    :cond_0
-+    :cond_1
-     :try_start_1
-     new-instance p0, Landroid/os/RemoteException;
- 
 @@ -386,6 +404,19 @@
          }
      .end annotation
@@ -291,7 +255,7 @@ index 2bf02c02..0526df77 100644
 +
 +    move-result-object v0
 +
-+    if-eqz v0, :cond_0
++    if-eqz v0, :unica_keybox_get_count_continue
 +
 +    invoke-virtual {v0}, Ljava/lang/Integer;->intValue()I
 +
@@ -299,28 +263,10 @@ index 2bf02c02..0526df77 100644
 +
 +    return p0
 +
-+    :cond_0
++    :unica_keybox_get_count_continue
      invoke-virtual {p0}, Landroid/system/keystore2/IKeystoreService$Stub$Proxy;->asBinder()Landroid/os/IBinder;
  
      move-result-object v0
-@@ -417,7 +448,7 @@
- 
-     move-result p0
- 
--    if-eqz p0, :cond_0
-+    if-eqz p0, :cond_1
- 
-     invoke-virtual {v1}, Landroid/os/Parcel;->readException()V
- 
-@@ -433,7 +464,7 @@
- 
-     return p0
- 
--    :cond_0
-+    :cond_1
-     :try_start_1
-     new-instance p0, Landroid/os/RemoteException;
- 
 @@ -617,6 +648,15 @@
          }
      .end annotation
@@ -329,67 +275,31 @@ index 2bf02c02..0526df77 100644
 +
 +    move-result-object v0
 +
-+    if-eqz v0, :cond_0
++    if-eqz v0, :unica_keybox_grant_continue
 +
 +    return-object v0
 +
-+    :cond_0
++    :unica_keybox_grant_continue
      invoke-virtual {p0}, Landroid/system/keystore2/IKeystoreService$Stub$Proxy;->asBinder()Landroid/os/IBinder;
  
      move-result-object v0
-@@ -650,7 +690,7 @@
- 
-     move-result p0
- 
--    if-eqz p0, :cond_0
-+    if-eqz p0, :cond_1
- 
-     invoke-virtual {v1}, Landroid/os/Parcel;->readException()V
- 
-@@ -670,7 +710,7 @@
- 
-     return-object p0
- 
--    :cond_0
-+    :cond_1
-     :try_start_1
-     new-instance p0, Landroid/os/RemoteException;
- 
-@@ -700,6 +740,15 @@
-         }
+@@ -703,6 +743,15 @@
+     .annotation runtime Ljava/lang/Deprecated;
      .end annotation
  
 +    invoke-static {p1}, Lio/mesalabs/unica/KeyboxImitationHooks;->onListEntries(I)[Landroid/system/keystore2/KeyDescriptor;
 +
 +    move-result-object v0
 +
-+    if-eqz v0, :cond_0
++    if-eqz v0, :unica_keybox_list_continue
 +
 +    return-object v0
 +
-+    :cond_0
++    :unica_keybox_list_continue
      invoke-virtual {p0}, Landroid/system/keystore2/IKeystoreService$Stub$Proxy;->asBinder()Landroid/os/IBinder;
  
      move-result-object v0
-@@ -731,7 +780,7 @@
- 
-     move-result p0
- 
--    if-eqz p0, :cond_0
-+    if-eqz p0, :cond_1
- 
-     invoke-virtual {v1}, Landroid/os/Parcel;->readException()V
- 
-@@ -751,7 +800,7 @@
- 
-     return-object p0
- 
--    :cond_0
-+    :cond_1
-     :try_start_1
-     new-instance p0, Landroid/os/RemoteException;
- 
-@@ -781,6 +830,15 @@
+@@ -784,6 +833,15 @@
          }
      .end annotation
  
@@ -397,33 +307,15 @@ index 2bf02c02..0526df77 100644
 +
 +    move-result-object v0
 +
-+    if-eqz v0, :cond_0
++    if-eqz v0, :unica_keybox_list_batched_continue
 +
 +    return-object v0
 +
-+    :cond_0
++    :unica_keybox_list_batched_continue
      invoke-virtual {p0}, Landroid/system/keystore2/IKeystoreService$Stub$Proxy;->asBinder()Landroid/os/IBinder;
  
      move-result-object v0
-@@ -814,7 +872,7 @@
- 
-     move-result p0
- 
--    if-eqz p0, :cond_0
-+    if-eqz p0, :cond_1
- 
-     invoke-virtual {v1}, Landroid/os/Parcel;->readException()V
- 
-@@ -834,7 +892,7 @@
- 
-     return-object p0
- 
--    :cond_0
-+    :cond_1
-     :try_start_1
-     new-instance p0, Landroid/os/RemoteException;
- 
-@@ -864,6 +922,15 @@
+@@ -867,6 +925,15 @@
          }
      .end annotation
  
@@ -431,33 +323,15 @@ index 2bf02c02..0526df77 100644
 +
 +    move-result v0
 +
-+    if-eqz v0, :cond_0
++    if-eqz v0, :unica_keybox_ungrant_continue
 +
 +    return-void
 +
-+    :cond_0
++    :unica_keybox_ungrant_continue
      invoke-virtual {p0}, Landroid/system/keystore2/IKeystoreService$Stub$Proxy;->asBinder()Landroid/os/IBinder;
  
      move-result-object v0
-@@ -895,7 +962,7 @@
- 
-     move-result p0
- 
--    if-eqz p0, :cond_0
-+    if-eqz p0, :cond_1
- 
-     invoke-virtual {v1}, Landroid/os/Parcel;->readException()V
-     :try_end_0
-@@ -907,7 +974,7 @@
- 
-     return-void
- 
--    :cond_0
-+    :cond_1
-     :try_start_1
-     new-instance p0, Landroid/os/RemoteException;
- 
-@@ -937,6 +1004,15 @@
+@@ -940,6 +1007,15 @@
          }
      .end annotation
  
@@ -465,36 +339,18 @@ index 2bf02c02..0526df77 100644
 +
 +    move-result v0
 +
-+    if-eqz v0, :cond_0
++    if-eqz v0, :unica_keybox_update_continue
 +
 +    return-void
 +
-+    :cond_0
++    :unica_keybox_update_continue
      invoke-virtual {p0}, Landroid/system/keystore2/IKeystoreService$Stub$Proxy;->asBinder()Landroid/os/IBinder;
  
      move-result-object v0
-@@ -970,7 +1046,7 @@
- 
-     move-result p0
- 
--    if-eqz p0, :cond_0
-+    if-eqz p0, :cond_1
- 
-     invoke-virtual {v1}, Landroid/os/Parcel;->readException()V
-     :try_end_0
-@@ -982,7 +1058,7 @@
- 
-     return-void
- 
--    :cond_0
-+    :cond_1
-     :try_start_1
-     new-instance p0, Landroid/os/RemoteException;
- 
-diff --git a/smali_classes4/com/android/internal/org/bouncycastle/jcajce/provider/asymmetric/EC$Mappings.smali b/smali_classes4/com/android/internal/org/bouncycastle/jcajce/provider/asymmetric/EC$Mappings.smali
-index 7da5e848..581668b7 100644
---- a/smali_classes4/com/android/internal/org/bouncycastle/jcajce/provider/asymmetric/EC$Mappings.smali
-+++ b/smali_classes4/com/android/internal/org/bouncycastle/jcajce/provider/asymmetric/EC$Mappings.smali
+diff --git a/smali_classes5/com/android/internal/org/bouncycastle/jcajce/provider/asymmetric/EC$Mappings.smali b/smali_classes5/com/android/internal/org/bouncycastle/jcajce/provider/asymmetric/EC$Mappings.smali
+index 7da5e84..581668b 100644
+--- a/smali_classes5/com/android/internal/org/bouncycastle/jcajce/provider/asymmetric/EC$Mappings.smali
++++ b/smali_classes5/com/android/internal/org/bouncycastle/jcajce/provider/asymmetric/EC$Mappings.smali
 @@ -26,7 +26,19 @@
  
  # virtual methods
@@ -516,11 +372,11 @@ index 7da5e848..581668b7 100644
  
      return-void
  .end method
-diff --git a/smali_classes6/io/mesalabs/unica/IKeyboxProvider.smali b/smali_classes6/io/mesalabs/unica/IKeyboxProvider.smali
+diff --git a/smali_classes7/io/mesalabs/unica/IKeyboxProvider.smali b/smali_classes7/io/mesalabs/unica/IKeyboxProvider.smali
 new file mode 100644
-index 00000000..7f25d372
+index 0000000..7f25d37
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/IKeyboxProvider.smali
++++ b/smali_classes7/io/mesalabs/unica/IKeyboxProvider.smali
 @@ -0,0 +1,20 @@
 +.class public interface abstract Lio/mesalabs/unica/IKeyboxProvider;
 +.super Ljava/lang/Object;
@@ -542,11 +398,11 @@ index 00000000..7f25d372
 +
 +.method public abstract blacklist hasKeybox()Z
 +.end method
-diff --git a/smali_classes6/io/mesalabs/unica/KeyProviderManager$DefaultKeyboxProvider.smali b/smali_classes6/io/mesalabs/unica/KeyProviderManager$DefaultKeyboxProvider.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyProviderManager$DefaultKeyboxProvider.smali b/smali_classes7/io/mesalabs/unica/KeyProviderManager$DefaultKeyboxProvider.smali
 new file mode 100644
-index 00000000..a705d18c
+index 0000000..a705d18
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyProviderManager$DefaultKeyboxProvider.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyProviderManager$DefaultKeyboxProvider.smali
 @@ -0,0 +1,709 @@
 +.class Lio/mesalabs/unica/KeyProviderManager$DefaultKeyboxProvider;
 +.super Ljava/lang/Object;
@@ -1257,20 +1113,20 @@ index 00000000..a705d18c
 +    :goto_0
 +    return v1
 +.end method
-diff --git a/smali_classes6/io/mesalabs/unica/KeyProviderManager-IA.smali b/smali_classes6/io/mesalabs/unica/KeyProviderManager-IA.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyProviderManager-IA.smali b/smali_classes7/io/mesalabs/unica/KeyProviderManager-IA.smali
 new file mode 100644
-index 00000000..97cc78c3
+index 0000000..97cc78c
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyProviderManager-IA.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyProviderManager-IA.smali
 @@ -0,0 +1,3 @@
 +.class public final synthetic Lio/mesalabs/unica/KeyProviderManager-IA;
 +.super Ljava/lang/Object;
 +.source "D8$$SyntheticClass"
-diff --git a/smali_classes6/io/mesalabs/unica/KeyProviderManager.smali b/smali_classes6/io/mesalabs/unica/KeyProviderManager.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyProviderManager.smali b/smali_classes7/io/mesalabs/unica/KeyProviderManager.smali
 new file mode 100644
-index 00000000..d68a6e71
+index 0000000..d68a6e7
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyProviderManager.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyProviderManager.smali
 @@ -0,0 +1,112 @@
 +.class public final Lio/mesalabs/unica/KeyProviderManager;
 +.super Ljava/lang/Object;
@@ -1384,11 +1240,11 @@ index 00000000..d68a6e71
 +
 +    return v0
 +.end method
-diff --git a/smali_classes6/io/mesalabs/unica/KeyboxChainGenerator$Digest.smali b/smali_classes6/io/mesalabs/unica/KeyboxChainGenerator$Digest.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyboxChainGenerator$Digest.smali b/smali_classes7/io/mesalabs/unica/KeyboxChainGenerator$Digest.smali
 new file mode 100644
-index 00000000..c7a0cd3f
+index 0000000..c7a0cd3
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyboxChainGenerator$Digest.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyboxChainGenerator$Digest.smali
 @@ -0,0 +1,141 @@
 +.class final Lio/mesalabs/unica/KeyboxChainGenerator$Digest;
 +.super Ljava/lang/Record;
@@ -1531,11 +1387,11 @@ index 00000000..c7a0cd3f
 +
 +    return-object p0
 +.end method
-diff --git a/smali_classes6/io/mesalabs/unica/KeyboxChainGenerator$KeyGenParameters.smali b/smali_classes6/io/mesalabs/unica/KeyboxChainGenerator$KeyGenParameters.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyboxChainGenerator$KeyGenParameters.smali b/smali_classes7/io/mesalabs/unica/KeyboxChainGenerator$KeyGenParameters.smali
 new file mode 100644
-index 00000000..4d36f345
+index 0000000..4d36f34
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyboxChainGenerator$KeyGenParameters.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyboxChainGenerator$KeyGenParameters.smali
 @@ -0,0 +1,642 @@
 +.class final Lio/mesalabs/unica/KeyboxChainGenerator$KeyGenParameters;
 +.super Ljava/lang/Object;
@@ -2179,11 +2035,11 @@ index 00000000..4d36f345
 +
 +    return-object p0
 +.end method
-diff --git a/smali_classes6/io/mesalabs/unica/KeyboxChainGenerator.smali b/smali_classes6/io/mesalabs/unica/KeyboxChainGenerator.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyboxChainGenerator.smali b/smali_classes7/io/mesalabs/unica/KeyboxChainGenerator.smali
 new file mode 100644
-index 00000000..23b13b4b
+index 0000000..23b13b4
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyboxChainGenerator.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyboxChainGenerator.smali
 @@ -0,0 +1,1594 @@
 +.class final Lio/mesalabs/unica/KeyboxChainGenerator;
 +.super Ljava/lang/Object;
@@ -3779,11 +3635,11 @@ index 00000000..23b13b4b
 +
 +    return-object p0
 +.end method
-diff --git a/smali_classes6/io/mesalabs/unica/KeyboxDbHelper.smali b/smali_classes6/io/mesalabs/unica/KeyboxDbHelper.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyboxDbHelper.smali b/smali_classes7/io/mesalabs/unica/KeyboxDbHelper.smali
 new file mode 100644
-index 00000000..1c11edcf
+index 0000000..1c11edc
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyboxDbHelper.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyboxDbHelper.smali
 @@ -0,0 +1,1119 @@
 +.class final Lio/mesalabs/unica/KeyboxDbHelper;
 +.super Landroid/database/sqlite/SQLiteOpenHelper;
@@ -4904,11 +4760,11 @@ index 00000000..1c11edcf
 +
 +    return-void
 +.end method
-diff --git a/smali_classes6/io/mesalabs/unica/KeyboxImitationHooks$1.smali b/smali_classes6/io/mesalabs/unica/KeyboxImitationHooks$1.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyboxImitationHooks$1.smali b/smali_classes7/io/mesalabs/unica/KeyboxImitationHooks$1.smali
 new file mode 100644
-index 00000000..3dda8166
+index 0000000..3dda816
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyboxImitationHooks$1.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyboxImitationHooks$1.smali
 @@ -0,0 +1,80 @@
 +.class Lio/mesalabs/unica/KeyboxImitationHooks$1;
 +.super Landroid/system/keystore2/IKeystoreSecurityLevel$Default;
@@ -4990,11 +4846,11 @@ index 00000000..3dda8166
 +
 +    return-object p0
 +.end method
-diff --git a/smali_classes6/io/mesalabs/unica/KeyboxImitationHooks.smali b/smali_classes6/io/mesalabs/unica/KeyboxImitationHooks.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyboxImitationHooks.smali b/smali_classes7/io/mesalabs/unica/KeyboxImitationHooks.smali
 new file mode 100644
-index 00000000..ff443c9f
+index 0000000..ff443c9
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyboxImitationHooks.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyboxImitationHooks.smali
 @@ -0,0 +1,3506 @@
 +.class public final Lio/mesalabs/unica/KeyboxImitationHooks;
 +.super Ljava/lang/Object;
@@ -8502,11 +8358,11 @@ index 00000000..ff443c9f
 +
 +    return-void
 +.end method
-diff --git a/smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$BaseOperation.smali b/smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$BaseOperation.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$BaseOperation.smali b/smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$BaseOperation.smali
 new file mode 100644
-index 00000000..7cd6a253
+index 0000000..7cd6a25
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$BaseOperation.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$BaseOperation.smali
 @@ -0,0 +1,185 @@
 +.class Lio/mesalabs/unica/KeyboxOperationUtils$BaseOperation;
 +.super Landroid/system/keystore2/IKeystoreOperation$Default;
@@ -8693,11 +8549,11 @@ index 00000000..7cd6a253
 +    :goto_0
 +    return-void
 +.end method
-diff --git a/smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$DecryptOperation.smali b/smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$DecryptOperation.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$DecryptOperation.smali b/smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$DecryptOperation.smali
 new file mode 100644
-index 00000000..5a9c8a14
+index 0000000..5a9c8a1
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$DecryptOperation.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$DecryptOperation.smali
 @@ -0,0 +1,352 @@
 +.class final Lio/mesalabs/unica/KeyboxOperationUtils$DecryptOperation;
 +.super Lio/mesalabs/unica/KeyboxOperationUtils$BaseOperation;
@@ -9051,11 +8907,11 @@ index 00000000..5a9c8a14
 +
 +    throw p1
 +.end method
-diff --git a/smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$KeyAgreementOperation.smali b/smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$KeyAgreementOperation.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$KeyAgreementOperation.smali b/smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$KeyAgreementOperation.smali
 new file mode 100644
-index 00000000..01917f08
+index 0000000..01917f0
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$KeyAgreementOperation.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$KeyAgreementOperation.smali
 @@ -0,0 +1,189 @@
 +.class final Lio/mesalabs/unica/KeyboxOperationUtils$KeyAgreementOperation;
 +.super Lio/mesalabs/unica/KeyboxOperationUtils$BaseOperation;
@@ -9246,11 +9102,11 @@ index 00000000..01917f08
 +
 +    throw p1
 +.end method
-diff --git a/smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$SignOperation.smali b/smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$SignOperation.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$SignOperation.smali b/smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$SignOperation.smali
 new file mode 100644
-index 00000000..1646c6c3
+index 0000000..1646c6c
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyboxOperationUtils$SignOperation.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyboxOperationUtils$SignOperation.smali
 @@ -0,0 +1,271 @@
 +.class final Lio/mesalabs/unica/KeyboxOperationUtils$SignOperation;
 +.super Lio/mesalabs/unica/KeyboxOperationUtils$BaseOperation;
@@ -9523,11 +9379,11 @@ index 00000000..1646c6c3
 +
 +    throw p1
 +.end method
-diff --git a/smali_classes6/io/mesalabs/unica/KeyboxOperationUtils.smali b/smali_classes6/io/mesalabs/unica/KeyboxOperationUtils.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyboxOperationUtils.smali b/smali_classes7/io/mesalabs/unica/KeyboxOperationUtils.smali
 new file mode 100644
-index 00000000..8b5d71b7
+index 0000000..8b5d71b
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyboxOperationUtils.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyboxOperationUtils.smali
 @@ -0,0 +1,158 @@
 +.class final Lio/mesalabs/unica/KeyboxOperationUtils;
 +.super Ljava/lang/Object;
@@ -9687,11 +9543,11 @@ index 00000000..8b5d71b7
 +
 +    return-object v0
 +.end method
-diff --git a/smali_classes6/io/mesalabs/unica/KeyboxUtils$$ExternalSyntheticLambda0.smali b/smali_classes6/io/mesalabs/unica/KeyboxUtils$$ExternalSyntheticLambda0.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyboxUtils$$ExternalSyntheticLambda0.smali b/smali_classes7/io/mesalabs/unica/KeyboxUtils$$ExternalSyntheticLambda0.smali
 new file mode 100644
-index 00000000..ad520932
+index 0000000..ad52093
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyboxUtils$$ExternalSyntheticLambda0.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyboxUtils$$ExternalSyntheticLambda0.smali
 @@ -0,0 +1,30 @@
 +.class public final synthetic Lio/mesalabs/unica/KeyboxUtils$$ExternalSyntheticLambda0;
 +.super Ljava/lang/Object;
@@ -9723,11 +9579,11 @@ index 00000000..ad520932
 +
 +    return p0
 +.end method
-diff --git a/smali_classes6/io/mesalabs/unica/KeyboxUtils.smali b/smali_classes6/io/mesalabs/unica/KeyboxUtils.smali
+diff --git a/smali_classes7/io/mesalabs/unica/KeyboxUtils.smali b/smali_classes7/io/mesalabs/unica/KeyboxUtils.smali
 new file mode 100644
-index 00000000..c6bc67e8
+index 0000000..c6bc67e
 --- /dev/null
-+++ b/smali_classes6/io/mesalabs/unica/KeyboxUtils.smali
++++ b/smali_classes7/io/mesalabs/unica/KeyboxUtils.smali
 @@ -0,0 +1,2372 @@
 +.class final Lio/mesalabs/unica/KeyboxUtils;
 +.super Ljava/lang/Object;
@@ -12102,4 +11958,4 @@ index 00000000..c6bc67e8
 +    throw p0
 +.end method
 -- 
-2.55.0
+2.53.0

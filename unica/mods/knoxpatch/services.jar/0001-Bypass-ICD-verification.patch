@@ -20,7 +20,7 @@ diff --git a/smali_classes2/com/samsung/android/security/keystore/AttestationUti
 -    iget-boolean v0, p1, Lcom/samsung/android/security/keystore/AttestParameterSpec;->mVerifiableIntegrity:Z
 +    const/4 v0, 0x0
  
-     const-string v2, "AttestationUtils"
+     const-string v3, "AttestationUtils"
  
 -- 
 2.51.1

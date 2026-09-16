@@ -25,10 +25,26 @@ if [ -d "$FW_DIR/${MODEL}_${REGION}/system/system/media/audio/pensounds" ]; then
     ADD_TO_WORK_DIR "dm3qxxx" "system" "system/media/audio/pensounds"
     if [ "$AIRCOMMAND_OVERRIDE" ]; then
         AIRCOMMAND_OVERRIDE_ROOT="${AIRCOMMAND_OVERRIDE%/system/priv-app/AirCommand/AirCommand.apk}"
+
+        # AirCommand may already have been decoded from the source/dm3q build
+        # by an earlier module or restored decode cache. If that tree remains,
+        # BUILD_APKS rebuilds it after this raw APK copy and silently replaces
+        # the compatibility package again.
+        EVAL "rm -rf \"$APKTOOL_DIR/system/priv-app/AirCommand/AirCommand.apk\""
+
         LOG "- Installing platform/device AirCommand compatibility package as final override"
         ADD_TO_WORK_DIR "$AIRCOMMAND_OVERRIDE_ROOT" "system" \
             "system/priv-app/AirCommand/AirCommand.apk" \
             0 0 644 "u:object_r:system_file:s0"
+
+        AIRCOMMAND_OVERRIDE_SHA256="$(sha256sum "$AIRCOMMAND_OVERRIDE" | cut -d " " -f 1)"
+        AIRCOMMAND_INSTALLED_SHA256="$(sha256sum \
+            "$WORK_DIR/system/system/priv-app/AirCommand/AirCommand.apk" | cut -d " " -f 1)"
+        if [ "$AIRCOMMAND_OVERRIDE_SHA256" != "$AIRCOMMAND_INSTALLED_SHA256" ]; then
+            LOGE "AirCommand compatibility package was overwritten after installation"
+            return 1
+        fi
+        LOG "- Verified AirCommand compatibility package ($AIRCOMMAND_INSTALLED_SHA256)"
     else
         ADD_TO_WORK_DIR "dm3qxxx" "system" "system/priv-app/AirCommand"
     fi
@@ -39,4 +55,5 @@ else
     LOG "- SPen support not detected in target device. Ignoring."
 fi
 
-unset MODEL REGION AIRCOMMAND_OVERRIDE AIRCOMMAND_OVERRIDE_ROOT
+unset MODEL REGION AIRCOMMAND_OVERRIDE AIRCOMMAND_OVERRIDE_ROOT \
+    AIRCOMMAND_OVERRIDE_SHA256 AIRCOMMAND_INSTALLED_SHA256

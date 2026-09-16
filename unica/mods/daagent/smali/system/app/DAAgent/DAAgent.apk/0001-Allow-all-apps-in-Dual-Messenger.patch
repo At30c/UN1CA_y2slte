@@ -326,74 +326,36 @@ diff --git a/smali/com/samsung/android/da/daagent/receiver/DualAppIntentReceiver
 index 9a86cfb9..d447f08c 100644
 --- a/smali/com/samsung/android/da/daagent/receiver/DualAppIntentReceiver.smali
 +++ b/smali/com/samsung/android/da/daagent/receiver/DualAppIntentReceiver.smali
-@@ -33,7 +33,7 @@
+@@ -328,6 +328,8 @@
  
-     const-string v7, "DualAppIntentReceiver"
- 
--    if-eqz v3, :cond_24
-+    if-eqz v3, :cond_25
- 
-     invoke-virtual {v3}, Landroid/content/Intent;->getAction()Ljava/lang/String;
- 
-@@ -325,6 +325,8 @@
- 
-     if-eqz v0, :cond_16
+     if-eqz v0, :cond_17
  
 +    invoke-static {v2}, Lcom/samsung/android/da/daagent/utils/DAUtility;->updateWhitelistAppsInSystemServer(Landroid/content/Context;)V
 +
      invoke-static {v2}, Lcom/samsung/android/da/daagent/service/SendSaLogService;->schedule(Landroid/content/Context;)V
  
      invoke-static {}, Lcom/samsung/android/da/daagent/utils/DAUtility;->getDualAppProfileId()I
-@@ -698,8 +700,6 @@
-     goto :goto_e
- 
-     :cond_12
+@@ -747,6 +749,4 @@
+     :cond_13
 -    invoke-static {v2}, Lcom/samsung/android/da/daagent/utils/DAUtility;->updateWhitelistAppsInSystemServer(Landroid/content/Context;)V
 -
      new-instance v1, Landroid/os/Bundle;
  
      invoke-direct {v1}, Landroid/os/Bundle;-><init>()V
-@@ -851,7 +851,7 @@
- 
-     move-result-object v0
- 
--    if-eqz v0, :cond_23
-+    if-eqz v0, :cond_24
- 
-     const-string v1, "result_code"
- 
-@@ -930,14 +930,14 @@
- 
-     move-result-object v1
- 
--    if-eqz v1, :cond_23
-+    if-eqz v1, :cond_24
- 
-     move v5, v8
- 
-     :goto_12
-     array-length v6, v1
- 
--    if-ge v5, v6, :cond_23
-+    if-ge v5, v6, :cond_24
- 
-     aget-object v6, v1, v5
- 
-@@ -1256,15 +1256,32 @@
+@@ -1304,8 +1304,26 @@
  
      move-result v0
  
--    if-eqz v0, :cond_23
-+    if-nez v0, :cond_23
+-    if-eqz v0, :cond_24
++    if-nez v0, :dual_app_update_whitelist
  
--    invoke-static {v2}, Lcom/samsung/android/da/daagent/utils/DAUtility;->updateWhitelistAppsInSystemServer(Landroid/content/Context;)V
 +    const-string v0, "android.intent.action.PACKAGE_ADDED"
 +
 +    invoke-virtual {v0, v1}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
 +
 +    move-result v0
 +
-+    if-nez v0, :cond_23
++    if-nez v0, :dual_app_update_whitelist
 +
 +    const-string v0, "android.intent.action.PACKAGE_REMOVED"
 +
@@ -402,19 +364,12 @@ index 9a86cfb9..d447f08c 100644
 +    move-result v0
 +
 +    if-eqz v0, :cond_24
- 
-     :cond_23
-+    invoke-static {v2}, Lcom/samsung/android/da/daagent/utils/DAUtility;->updateWhitelistAppsInSystemServer(Landroid/content/Context;)V
 +
-+    :cond_24
-     :goto_18
-     return-void
++    :dual_app_update_whitelist
++
+     invoke-static {v2}, Lcom/samsung/android/da/daagent/utils/DAUtility;->updateWhitelistAppsInSystemServer(Landroid/content/Context;)V
  
--    :cond_24
-+    :cond_25
-     :goto_19
-     const-string v0, "DualAppIntentReceiver onReceive() intent is null"
- 
+     :cond_24
 diff --git a/smali/com/samsung/android/da/daagent/utils/DAUtility.smali b/smali/com/samsung/android/da/daagent/utils/DAUtility.smali
 index 4dc37aac..2602c907 100644
 --- a/smali/com/samsung/android/da/daagent/utils/DAUtility.smali

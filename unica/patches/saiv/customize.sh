@@ -194,18 +194,35 @@ fi
 # SEC_PRODUCT_FEATURE_VISION_CONFIG_SMART_CROPPING_SOLUTION
 if [ ! -d "$WORK_DIR/system/system/saiv/smartcropping_2.0" ] || \
         [ "$TARGET_PLATFORM_SDK_VERSION" -lt "$SOURCE_PLATFORM_SDK_VERSION" ]; then
-    if [ -d "$WORK_DIR/system/system/saiv/smartcropping_2.0" ]; then
-        DELETE_FROM_WORK_DIR "system" "system/saiv/smartcropping_2.0"
+    SOURCE_SMARTCROPPING_DIR="$FW_DIR/$SOURCE_FIRMWARE_PATH/system/system/saiv/smartcropping_2.0"
+    if [ -f "$SOURCE_SMARTCROPPING_DIR/db/smartcrop_saliency_deploy.prototxt" ] && \
+            [ -f "$SOURCE_SMARTCROPPING_DIR/db/smartcrop_saliency_train" ]; then
+        if [ -d "$WORK_DIR/system/system/saiv/smartcropping_2.0" ]; then
+            DELETE_FROM_WORK_DIR "system" "system/saiv/smartcropping_2.0"
+        fi
+        ADD_TO_WORK_DIR "$SOURCE_FIRMWARE" "system" "system/saiv/smartcropping_2.0/db/smartcrop_saliency_deploy.prototxt" 0 0 644 "u:object_r:system_file:s0"
+        ADD_TO_WORK_DIR "$SOURCE_FIRMWARE" "system" "system/saiv/smartcropping_2.0/db/smartcrop_saliency_train" 0 0 644 "u:object_r:system_file:s0"
+    elif [ ! -d "$WORK_DIR/system/system/saiv/smartcropping_2.0" ]; then
+        LOG "- Source has no legacy Smart Cropping bundle; restoring target model"
+        ADD_TO_WORK_DIR "$TARGET_FIRMWARE" "system" "system/saiv/smartcropping_2.0" 0 0 755 "u:object_r:system_file:s0"
+    else
+        LOG "- Source has no legacy Smart Cropping bundle; retaining target model"
     fi
-    ADD_TO_WORK_DIR "$SOURCE_FIRMWARE" "system" "system/saiv/smartcropping_2.0/db/smartcrop_saliency_deploy.prototxt" 0 0 644 "u:object_r:system_file:s0"
-    ADD_TO_WORK_DIR "$SOURCE_FIRMWARE" "system" "system/saiv/smartcropping_2.0/db/smartcrop_saliency_train" 0 0 644 "u:object_r:system_file:s0"
 fi
 if [ ! -d "$WORK_DIR/vendor/saiv/image_understanding/db/sce_detector" ] || \
         [ "$TARGET_PLATFORM_SDK_VERSION" -lt "$SOURCE_PLATFORM_SDK_VERSION" ]; then
-    if [ -d "$WORK_DIR/vendor/saiv/image_understanding/db/sce_detector" ]; then
-        DELETE_FROM_WORK_DIR "vendor" "saiv/image_understanding/db/sce_detector"
+    SOURCE_SCE_MODEL="$FW_DIR/$SOURCE_FIRMWARE_PATH/vendor/saiv/image_understanding/db/sce_detector/sce_detector_cnn.tflite"
+    if [ -f "$SOURCE_SCE_MODEL" ]; then
+        if [ -d "$WORK_DIR/vendor/saiv/image_understanding/db/sce_detector" ]; then
+            DELETE_FROM_WORK_DIR "vendor" "saiv/image_understanding/db/sce_detector"
+        fi
+        ADD_TO_WORK_DIR "$SOURCE_FIRMWARE" "vendor" "saiv/image_understanding/db/sce_detector/sce_detector_cnn.tflite" 0 0 644 "u:object_r:vendor_snap_file:s0"
+    elif [ ! -d "$WORK_DIR/vendor/saiv/image_understanding/db/sce_detector" ]; then
+        LOG "- Source has no legacy SCE detector bundle; restoring target model"
+        ADD_TO_WORK_DIR "$TARGET_FIRMWARE" "vendor" "saiv/image_understanding/db/sce_detector" 0 2000 755 "u:object_r:vendor_snap_file:s0"
+    else
+        LOG "- Source has no legacy SCE detector bundle; retaining target model"
     fi
-    ADD_TO_WORK_DIR "$SOURCE_FIRMWARE" "vendor" "saiv/image_understanding/db/sce_detector/sce_detector_cnn.tflite" 0 0 644 "u:object_r:vendor_snap_file:s0"
 fi
 
 # SEC_PRODUCT_FEATURE_CAMERA_CONFIG_STRIDE_OCR_VERSION
@@ -230,4 +247,5 @@ unset SOURCE_FIRMWARE_PATH TARGET_FIRMWARE_PATH \
     SOURCE_VISION_CONFIG_FACE_RECOGNITION_SOLUTION TARGET_VISION_CONFIG_FACE_RECOGNITION_SOLUTION \
     SOURCE_GALLERY_CONFIG_IMAGE_TAGGER_VERSION TARGET_GALLERY_CONFIG_IMAGE_TAGGER_VERSION \
     SOURCE_GALLERY_CONFIG_PET_CLUSTER_VERSION TARGET_GALLERY_CONFIG_PET_CLUSTER_VERSION \
-    SOURCE_CAMERA_CONFIG_DOCUMENT_DEWARP_VERSION TARGET_CAMERA_CONFIG_DOCUMENT_DEWARP_VERSION
+    SOURCE_CAMERA_CONFIG_DOCUMENT_DEWARP_VERSION TARGET_CAMERA_CONFIG_DOCUMENT_DEWARP_VERSION \
+    SOURCE_SMARTCROPPING_DIR SOURCE_SCE_MODEL

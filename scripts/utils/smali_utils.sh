@@ -342,8 +342,12 @@ SMALI_PATCH()
 
         AFTER="$(sha1sum "$FILE_PATH/$SMALI")"
         if [[ "$BEFORE" == "$AFTER" ]]; then
-            LOGE "Failed to replace return value of method \"$METHOD\" in /$PARTITION/$FILE/$SMALI to \"$VALUE\""
-            return 1
+            # The decoded cache may already contain the canonical method body
+            # produced above. Since the method was found and successfully
+            # rewritten, identical output means the requested return value is
+            # already applied rather than a patch failure.
+            LOG "- Return value of method \"$METHOD\" is already patched; skipping"
+            return 0
         fi
     # Replace a string with another string inside the method
     # or Replace a line with another line inside the method
@@ -356,10 +360,26 @@ SMALI_PATCH()
         ' "$FILE_PATH/$SMALI")"
 
         # Decoded-cache entries may already contain a patch from an earlier
-        # build.  Treat the exact replacement as success only when the old
-        # value is no longer present in the selected method.
-        if ! grep -Fq -- "$VALUE" <<< "$METHOD_CONTENT" && \
-                grep -Fq -- "$REPLACEMENT" <<< "$METHOD_CONTENT"; then
+        # build. Check complete smali literals/instructions: a plain substring
+        # check would mistake values such as string "2" for an unrelated 0x2.
+        local VALUE_PRESENT=false
+        local REPLACEMENT_PRESENT=false
+        local METHOD_LINE
+        local METHOD_LINE_TRIMMED
+        while IFS= read -r METHOD_LINE; do
+            if [[ "$METHOD_LINE" =~ ^[[:space:]]*const-string(/jumbo)?[[:space:]] ]]; then
+                [[ "$METHOD_LINE" == *\"$VALUE\"* ]] && VALUE_PRESENT=true
+                [[ "$METHOD_LINE" == *\"$REPLACEMENT\"* ]] && REPLACEMENT_PRESENT=true
+            else
+                METHOD_LINE_TRIMMED="$METHOD_LINE"
+                METHOD_LINE_TRIMMED="${METHOD_LINE_TRIMMED#"${METHOD_LINE_TRIMMED%%[![:space:]]*}"}"
+                METHOD_LINE_TRIMMED="${METHOD_LINE_TRIMMED%"${METHOD_LINE_TRIMMED##*[![:space:]]}"}"
+                [[ "$METHOD_LINE_TRIMMED" == "$VALUE" ]] && VALUE_PRESENT=true
+                [[ "$METHOD_LINE_TRIMMED" == "$REPLACEMENT" ]] && REPLACEMENT_PRESENT=true
+            fi
+        done <<< "$METHOD_CONTENT"
+
+        if ! $VALUE_PRESENT && $REPLACEMENT_PRESENT; then
             LOG "- Value in method \"$METHOD\" is already patched; skipping"
             return 0
         fi
@@ -377,7 +397,15 @@ SMALI_PATCH()
                         next
                     }
                 } else if ($0 ~ /^[[:space:]]*const-string(\/jumbo)?/) {
-                    sub("\"" STR "\"", "\"" REP "\"")
+                    # STR is a literal smali string, not an awk regular
+                    # expression. Rebuild the line around the exact match so
+                    # characters such as (, ), [, + and . remain literal.
+                    needle = "\"" STR "\""
+                    pos = index($0, needle)
+                    if (pos) {
+                        $0 = substr($0, 1, pos - 1) "\"" REP "\"" \
+                            substr($0, pos + length(needle))
+                    }
                 } else {
                     line = $0
                     gsub(/^[ \t]+|[ \t]+$/, "", line)

@@ -103,6 +103,8 @@ EXPECTED_85_SHA256="7b77a7ac01d01b6787544f2a01a77f4fd929ec6da0625c6f413764e8622f
 BROKEN_PATCHED_85_SHA256="d7b634fad672b400656f2dced2504b25090e54992d189133b3eaf1dab7c54813"
 Q2_ONLY_PATCHED_85_SHA256="8ee75c6fc3eaf73cd6d93cfd9d96b253e4297706921bd57bedf224a5df16468a"
 PATCHED_85_SHA256="13e9fedd343f603445b7094aa6d44266614bbd7e1962c10f56b87f445b219ad0"
+EXPECTED_9_SHA256="775d705134ac47146a536d31e76af3d439d0e29d48087bc6c64d04c102c4bed6"
+PATCHED_9_SHA256="25f3b42b7889d097994f576a63402025cd988b24f401894340b70f1da7219e6d"
 ACTUAL_SHA256="$(sha256sum "$NETBPFLOAD" | cut -d ' ' -f 1)"
 
 if [ "$ACTUAL_SHA256" = "$EXPECTED_SHA256" ]; then
@@ -154,9 +156,24 @@ elif [ "$ACTUAL_SHA256" = "$Q2_ONLY_PATCHED_85_SHA256" ]; then
 elif [ "$ACTUAL_SHA256" = "$PATCHED_85_SHA256" ]; then
     LOG "- NetBpfLoad One UI 8.5 kernel gate is already disabled"
     FINAL_SHA256="$PATCHED_85_SHA256"
+elif [ "$ACTUAL_SHA256" = "$EXPECTED_9_SHA256" ]; then
+    # Android 17 keeps separate 5.4 and 5.10 feature gates. The two TBZ
+    # instructions enter their error blocks when the corresponding platform
+    # flags are enabled; branch directly to each normal continuation instead.
+    LOG "- Disabling NetBpfLoad One UI 9 kernel 5.4/5.10 version gates"
+    HEX_PATCH "$NETBPFLOAD" \
+        "cb7e1253730800d07f010571680100546b8244392b010036c1ffffb0" \
+        "cb7e1253730800d07f010571680100546b82443909000014c1ffffb0" > /dev/null
+    HEX_PATCH "$NETBPFLOAD" \
+        "5f110a71280100546a0800d04a914439ca000036c1ffffb0" \
+        "5f110a71280100546a0800d04a91443906000014c1ffffb0" > /dev/null
+    FINAL_SHA256="$PATCHED_9_SHA256"
+elif [ "$ACTUAL_SHA256" = "$PATCHED_9_SHA256" ]; then
+    LOG "- NetBpfLoad One UI 9 kernel gates are already disabled"
+    FINAL_SHA256="$PATCHED_9_SHA256"
 else
     LOGE "Unsupported netbpfload build: $ACTUAL_SHA256"
-    LOGE "Expected a supported One UI 8.0/8.5 original or patched build"
+    LOGE "Expected a supported One UI 8.0/8.5/9 original or patched build"
     return 1
 fi
 
@@ -171,6 +188,9 @@ PATCHED_NETD_SHA256="3ebd27e5f3a6f6c4efe04672c6b835701c8cf6cec584792e907e75d140b
 EXPECTED_NETD_85_SHA256="b15352158c8633d3a3b743331ce149daa29c6b7d656eed014392da082cf187cc"
 BROKEN_PATCHED_NETD_85_SHA256="4a6ba0362a869ee8e91b8317b57614cbd9d77872416543c413262e4c52b10aa2"
 PATCHED_NETD_85_SHA256="d62c8a9d351296e992f965e396c52cddc0db435ebd89b02d3c6834ade7b0c0d3"
+EXPECTED_NETD_9_SHA256="b201bb4871e76bf68f096892e1358efb51dac1008f42d3b3d4d7637a284817f9"
+BROKEN_PATCHED_NETD_9_SHA256="9f424b3d59957f25975260ad9267af6598ae94905988935b397495e8c71f630e"
+PATCHED_NETD_9_SHA256="ff780803b29a3fb993c841ca8da6166dcb32c8eb65f216cdab10b3066713ca32"
 ACTUAL_NETD_SHA256="$(sha256sum "$NETD_UPDATABLE" | cut -d ' ' -f 1)"
 
 if [ "$ACTUAL_NETD_SHA256" = "$EXPECTED_NETD_SHA256" ]; then
@@ -206,14 +226,70 @@ elif [ "$ACTUAL_NETD_SHA256" = "$BROKEN_PATCHED_NETD_85_SHA256" ]; then
 elif [ "$ACTUAL_NETD_SHA256" = "$PATCHED_NETD_85_SHA256" ]; then
     LOG "- netd One UI 8.5 kernel gate is already disabled"
     FINAL_NETD_SHA256="$PATCHED_NETD_85_SHA256"
+elif [ "$ACTUAL_NETD_SHA256" = "$EXPECTED_NETD_9_SHA256" ]; then
+    # Android 17 moved the 25Q2 test. Turn its conditional jump into the same
+    # unconditional jump to the supported-kernel continuation.
+    LOG "- Disabling netd One UI 9 kernel 5.4 version gate"
+    HEX_PATCH "$NETD_UPDATABLE" \
+        "687e12531f010571e81c0054680000f008714039881c0036" \
+        "687e12531f010571e7000014680000f008714039881c0036" > /dev/null
+    FINAL_NETD_SHA256="$PATCHED_NETD_9_SHA256"
+elif [ "$ACTUAL_NETD_SHA256" = "$BROKEN_PATCHED_NETD_9_SHA256" ]; then
+    # The first Android 17 patch jumped to 0x9678, in the middle of the
+    # expected<T> result writeback path, before its destination pointer was
+    # initialized. netd consequently wrote through x11=0x12800c and crashed.
+    # Branch to 0x9684, the normal continuation used by the original gate.
+    LOG "- Repairing cached netd One UI 9 kernel gate branch target"
+    HEX_PATCH "$NETD_UPDATABLE" \
+        "687e12531f010571e4000014680000f008714039881c0036" \
+        "687e12531f010571e7000014680000f008714039881c0036" > /dev/null
+    FINAL_NETD_SHA256="$PATCHED_NETD_9_SHA256"
+elif [ "$ACTUAL_NETD_SHA256" = "$PATCHED_NETD_9_SHA256" ]; then
+    LOG "- netd One UI 9 kernel gate is already disabled"
+    FINAL_NETD_SHA256="$PATCHED_NETD_9_SHA256"
 else
     LOGE "Unsupported libnetd_updatable build: $ACTUAL_NETD_SHA256"
-    LOGE "Expected a supported One UI 8.0/8.5 original or patched build"
+    LOGE "Expected a supported One UI 8.0/8.5/9 original or patched build"
     return 1
 fi
 
 if [ "$(sha256sum "$NETD_UPDATABLE" | cut -d ' ' -f 1)" != "$FINAL_NETD_SHA256" ]; then
     LOGE "libnetd_updatable patch validation failed"
+    return 1
+fi
+
+# Android 17's netd.o still carries dedicated Android T implementations for
+# Linux 4.19, but their program metadata caps the platform API at 36.  On API
+# 37 NetBpfLoad therefore skips both ingress_stats_4_19_t and
+# egress_stats_4_19_t, and netd aborts because their pinned programs do not
+# exist.  Extend only these two 4.19 variants to future platform APIs; their
+# kernel range remains [4.19, 5.4), so no newer implementation is affected.
+NETD_BPF="$PAYLOAD/etc/bpf/mainline/netd.o"
+EXPECTED_NETD_BPF_9_SHA256="4418d9cca4dca5ca4ea8cfc2a61cee247946e6fa0d0ec111ed6b10954a9a2e5a"
+PATCHED_NETD_BPF_9_SHA256="05cc78cebc8b6fe0b5203096f4cd0246a9bb9eeb2ee3c72cdf2d0dad8d865b24"
+ACTUAL_NETD_BPF_SHA256="$(sha256sum "$NETD_BPF" | cut -d ' ' -f 1)"
+
+if [ "$ACTUAL_NETD_BPF_SHA256" = "$EXPECTED_NETD_BPF_9_SHA256" ]; then
+    LOG "- Extending netd Android 4.19 ingress/egress programs to API 37"
+    # android_prog_def: min_kver=4.19, max_kver=5.4, min_api=3300,
+    # max_api=3600 -> max_api=65536. The pattern occurs exactly twice, for
+    # ingress_stats_4_19_t and egress_stats_4_19_t.
+    HEX_PATCH "$NETD_BPF" \
+        "000013040000040500000000e40c0000100e0000" \
+        "000013040000040500000000e40c000000000100" > /dev/null || return 1
+    HEX_PATCH "$NETD_BPF" \
+        "000013040000040500000000e40c0000100e0000" \
+        "000013040000040500000000e40c000000000100" > /dev/null || return 1
+elif [ "$ACTUAL_NETD_BPF_SHA256" = "$PATCHED_NETD_BPF_9_SHA256" ]; then
+    LOG "- netd Android 4.19 programs already support API 37"
+else
+    LOGE "Unsupported Android 17 netd.o build: $ACTUAL_NETD_BPF_SHA256"
+    return 1
+fi
+
+if [ "$(sha256sum "$NETD_BPF" | cut -d ' ' -f 1)" != \
+        "$PATCHED_NETD_BPF_9_SHA256" ]; then
+    LOGE "netd.o Android 4.19 API-range patch validation failed"
     return 1
 fi
 
@@ -255,8 +331,13 @@ rm -rf "$PATCH_TMP"
 
 unset CAPEX PATCH_TMP DECODED PAYLOAD NETBPFLOAD EXPECTED_SHA256 PATCHED_SHA256 \
     EXPECTED_85_SHA256 BROKEN_PATCHED_85_SHA256 \
-    Q2_ONLY_PATCHED_85_SHA256 PATCHED_85_SHA256 ACTUAL_SHA256 FINAL_SHA256 \
+    Q2_ONLY_PATCHED_85_SHA256 PATCHED_85_SHA256 EXPECTED_9_SHA256 \
+    PATCHED_9_SHA256 ACTUAL_SHA256 FINAL_SHA256 \
     NETD_UPDATABLE EXPECTED_NETD_SHA256 PATCHED_NETD_SHA256 \
     EXPECTED_NETD_85_SHA256 BROKEN_PATCHED_NETD_85_SHA256 \
-    PATCHED_NETD_85_SHA256 ACTUAL_NETD_SHA256 FINAL_NETD_SHA256 SALT \
+    PATCHED_NETD_85_SHA256 EXPECTED_NETD_9_SHA256 \
+    BROKEN_PATCHED_NETD_9_SHA256 PATCHED_NETD_9_SHA256 \
+    ACTUAL_NETD_SHA256 FINAL_NETD_SHA256 SALT \
+    NETD_BPF EXPECTED_NETD_BPF_9_SHA256 PATCHED_NETD_BPF_9_SHA256 \
+    ACTUAL_NETD_BPF_SHA256 \
     BUILT_APEX CERT_PREFIX

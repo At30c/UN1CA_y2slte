@@ -23,6 +23,30 @@ LOG_MISSING_PATCHES()
     fi
 }
 
+# Android 16 moved graphics.common from NDK V6 to V7.  The legacy display
+# stacks used for Exynos 990 optical FOD still reference the V6 SONAME even
+# though the V7 implementation keeps the ABI they consume.  Retarget only
+# imported 64-bit display libraries when the source no longer ships V6.
+PATCH_GRAPHICS_COMMON_NDK_DEPENDENCY()
+{
+    local GRAPHICS_LIB
+    local V6_HEX="616e64726f69642e68617264776172652e67726170686963732e636f6d6d6f6e2d56362d6e646b2e736f"
+    local V7_HEX="616e64726f69642e68617264776172652e67726170686963732e636f6d6d6f6e2d56372d6e646b2e736f"
+
+    if [[ -f "$WORK_DIR/system/system/lib64/android.hardware.graphics.common-V6-ndk.so" ]]; then
+        return
+    fi
+    if [[ ! -f "$WORK_DIR/system/system/lib64/android.hardware.graphics.common-V7-ndk.so" ]]; then
+        ABORT "Neither graphics.common NDK V6 nor V7 is available for the imported display stack"
+    fi
+
+    for GRAPHICS_LIB in "$@"; do
+        if [[ -f "$GRAPHICS_LIB" ]] && grep -aq "android.hardware.graphics.common-V6-ndk.so" "$GRAPHICS_LIB"; then
+            HEX_PATCH "$GRAPHICS_LIB" "$V6_HEX" "$V7_HEX"
+        fi
+    done
+}
+
 # Some Android 16 donors already contain the complete display stack used by
 # the target (resolution policy, HFR framework code and density handling).
 # Applying the legacy y2s compatibility patches on top of that stack can
@@ -204,6 +228,9 @@ if ! $PRESERVE_NATIVE_DISPLAY_STACK && ! $SOURCE_COMMON_SUPPORT_DYN_RESOLUTION_C
                 0 0 644 "u:object_r:system_lib_file:s0"
             ADD_TO_WORK_DIR "e2sxxx" "system" "system/lib64/libandroid_runtime.so" \
                 0 0 644 "u:object_r:system_lib_file:s0"
+            PATCH_GRAPHICS_COMMON_NDK_DEPENDENCY \
+                "$WORK_DIR/system/system/lib64/libgui.so" \
+                "$WORK_DIR/system/system/lib64/libui.so"
         else
             ADD_TO_WORK_DIR "$([[ "$TARGET_OS_SINGLE_SYSTEM_IMAGE" == "qssi" ]] && echo "b0qxxx" || echo "b0sxxx")" \
                 "system" "system/bin/bootanimation" 0 2000 755 "u:object_r:bootanim_exec:s0"
@@ -437,6 +464,10 @@ if [[ "$SOURCE_FINGERPRINT_CONFIG_SENSOR" != "$TARGET_FINGERPRINT_CONFIG_SENSOR"
                 else
                     ABORT "Unknown SSI: $TARGET_OS_SINGLE_SYSTEM_IMAGE"
                 fi
+
+                PATCH_GRAPHICS_COMMON_NDK_DEPENDENCY \
+                    "$WORK_DIR/system/system/lib64/libgui.so" \
+                    "$WORK_DIR/system/system/lib64/libui.so"
 
                 ADD_TO_WORK_DIR "r9qxxx" "system" "system/priv-app/BiometricSetting/BiometricSetting.apk" 0 0 644 "u:object_r:system_file:s0"
 
@@ -863,11 +894,24 @@ if [[ "$SOURCE_RIL_FEATURES" != "$TARGET_RIL_FEATURES" ]]; then
             "$TELEPHONY_FEATURES" "replaceall" \
             "$SOURCE_RIL_FEATURES" \
             "${TARGET_RIL_FEATURES//none/}"
+
+        # New telephony-common releases embed the product feature list in a
+        # longer diagnostic string instead of storing it as a standalone
+        # literal.  Match that complete literal so SMALI_PATCH remains scoped
+        # to dump() and can also recognize an already-patched decode cache.
+        DECODE_APK "system" "system/framework/telephony-common.jar" || return 1
+        TELEPHONY_LOGGER="$APKTOOL_DIR/system/framework/telephony-common.jar/smali/com/android/internal/telephony/TelephonyLogger.smali"
+        TELEPHONY_LOGGER_SOURCE="$SOURCE_RIL_FEATURES"
+        TELEPHONY_LOGGER_TARGET="${TARGET_RIL_FEATURES//none/}"
+        if grep -Fq "Feature=SecProductFeatures: (" "$TELEPHONY_LOGGER"; then
+            TELEPHONY_LOGGER_SOURCE=" Feature=SecProductFeatures: ($TELEPHONY_LOGGER_SOURCE), PackageManager: ("
+            TELEPHONY_LOGGER_TARGET=" Feature=SecProductFeatures: ($TELEPHONY_LOGGER_TARGET), PackageManager: ("
+        fi
         SMALI_PATCH "system" "system/framework/telephony-common.jar" \
             "smali/com/android/internal/telephony/TelephonyLogger.smali" "replace" \
             "dump(Ljava/io/FileDescriptor;Ljava/io/PrintWriter;[Ljava/lang/String;)V" \
-            "$SOURCE_RIL_FEATURES" \
-            "${TARGET_RIL_FEATURES//none/}"
+            "$TELEPHONY_LOGGER_SOURCE" \
+            "$TELEPHONY_LOGGER_TARGET"
         # SamsungProductFeatureTag is not present in every TeleService release.
         if [ -f "$APKTOOL_DIR/system/priv-app/TeleService/TeleService.apk/smali/com/samsung/telephony/model/feature/tag/SamsungProductFeatureTag.smali" ]; then
             SMALI_PATCH "system" "system/priv-app/TeleService/TeleService.apk" \
@@ -875,10 +919,13 @@ if [[ "$SOURCE_RIL_FEATURES" != "$TARGET_RIL_FEATURES" ]]; then
                 "$SOURCE_RIL_FEATURES" \
                 "${TARGET_RIL_FEATURES//none/}"
         fi
-        SMALI_PATCH "system" "system/priv-app/TeleService/TeleService.apk" \
-            "smali/com/samsung/telephony/model/feature/SamsungFeatureSatellite.smali" "replaceall" \
-            "$SOURCE_RIL_FEATURES" \
-            "${TARGET_RIL_FEATURES//none/}"
+        # SamsungFeatureSatellite was removed from newer TeleService builds.
+        if [ -f "$APKTOOL_DIR/system/priv-app/TeleService/TeleService.apk/smali/com/samsung/telephony/model/feature/SamsungFeatureSatellite.smali" ]; then
+            SMALI_PATCH "system" "system/priv-app/TeleService/TeleService.apk" \
+                "smali/com/samsung/telephony/model/feature/SamsungFeatureSatellite.smali" "replaceall" \
+                "$SOURCE_RIL_FEATURES" \
+                "${TARGET_RIL_FEATURES//none/}"
+        fi
     else
         # TODO handle this condition
         LOG_MISSING_PATCHES "SOURCE_RIL_FEATURES" "TARGET_RIL_FEATURES"
@@ -1069,8 +1116,6 @@ if [[ "$SOURCE_WLAN_CONFIG_CONNECTION_PERSONALIZATION" != "$TARGET_WLAN_CONFIG_C
             "CONFIG_CONNECTION_PERSONALIZATION" \
             "$TARGET_WLAN_CONFIG_CONNECTION_PERSONALIZATION" | \
             sed "s/CONFIG_CONNECTION_PERSONALIZATION/$SOURCE_WLAN_CONFIG_CONNECTION_PERSONALIZATION/g"
-        APPLY_PATCH "system" "system/priv-app/SecSettings/SecSettings.apk" \
-            "$MODPATH/wifi/connection_personalization/SecSettings.apk/0001-Allow-custom-CONNECTION_PERSONALIZATION-value.patch"
         BTM_CONTROLLER="$(find "$APKTOOL_DIR/system/priv-app/SecSettings/SecSettings.apk" \
             -path '*/com/samsung/android/settings/wifi/develop/*/btm/BtmController.smali' \
             -printf '%P\n' -quit)"
@@ -1080,9 +1125,8 @@ if [[ "$SOURCE_WLAN_CONFIG_CONNECTION_PERSONALIZATION" != "$TARGET_WLAN_CONFIG_C
         SMALI_PATCH "system" "system/priv-app/SecSettings/SecSettings.apk" \
             "$BTM_CONTROLLER" "replace" \
             "getAvailabilityStatus()I" \
-            "CONFIG_CONNECTION_PERSONALIZATION" \
-            "$TARGET_WLAN_CONFIG_CONNECTION_PERSONALIZATION" | \
-            sed "s/CONFIG_CONNECTION_PERSONALIZATION/$SOURCE_WLAN_CONFIG_CONNECTION_PERSONALIZATION/g"
+            "$SOURCE_WLAN_CONFIG_CONNECTION_PERSONALIZATION" \
+            "$TARGET_WLAN_CONFIG_CONNECTION_PERSONALIZATION"
 
         if [[ "$SOURCE_WLAN_CONFIG_DYNAMIC_SWITCH" != "$TARGET_WLAN_CONFIG_DYNAMIC_SWITCH" ]]; then
             SMALI_PATCH "system" "system/framework/semwifi-service.jar" \
@@ -1105,8 +1149,27 @@ if [[ "$SOURCE_WLAN_CONFIG_CONNECTION_PERSONALIZATION" != "$TARGET_WLAN_CONFIG_C
         if ! $TARGET_WLAN_SUPPORT_APE_SERVICE; then
             APPLY_PATCH "system" "system/framework/semwifi-service.jar" \
                 "$MODPATH/wifi/ape_service/semwifi-service.jar/0001-Disable-APE_SERVICE-support.patch"
-            APPLY_PATCH "system" "system/priv-app/SecSettings/SecSettings.apk" \
-                "$MODPATH/wifi/ape_service/SecSettings.apk/0001-Disable-APE_SERVICE-support.patch"
+            APE_CONTROLLER="$(find "$APKTOOL_DIR/system/priv-app/SecSettings/SecSettings.apk" \
+                -path '*/com/samsung/android/settings/wifi/develop/ApePreferenceController.smali' \
+                -printf '%P\n' -quit)"
+            if [[ -z "$APE_CONTROLLER" ]]; then
+                ABORT "Failed to locate ApePreferenceController.smali in SecSettings.apk"
+            fi
+
+            APE_CONTROLLER_PATH="$APKTOOL_DIR/system/priv-app/SecSettings/SecSettings.apk/$APE_CONTROLLER"
+            if grep -Fq '.field private static final SUPPORT_APE_SERVICE:Z = true' "$APE_CONTROLLER_PATH"; then
+                SMALI_PATCH "system" "system/priv-app/SecSettings/SecSettings.apk" \
+                    "$APE_CONTROLLER" "replaceall" \
+                    '.field private static final SUPPORT_APE_SERVICE:Z = true' \
+                    '.field private static final SUPPORT_APE_SERVICE:Z = false'
+            elif ! grep -Fq '.field private static final SUPPORT_APE_SERVICE:Z = false' "$APE_CONTROLLER_PATH"; then
+                ABORT "Unknown SUPPORT_APE_SERVICE field in ApePreferenceController.smali"
+            fi
+            SMALI_PATCH "system" "system/priv-app/SecSettings/SecSettings.apk" \
+                "$APE_CONTROLLER" "replace" \
+                "getAvailabilityStatus()I" \
+                "const/4 p0, 0x0" \
+                "const/4 p0, 0x3"
         fi
     else
         # TODO handle these conditions
@@ -1400,5 +1463,6 @@ elif $SOURCE_WLAN_SUPPORT_WIFI_TO_CELLULAR && ! $TARGET_WLAN_SUPPORT_WIFI_TO_CEL
         "false"
 fi
 
-unset TARGET_FIRMWARE_PATH TELEPHONY_FEATURES STRONGBOX_WORKER FP_SETTINGS_UTILS BTM_CONTROLLER
-unset -f GET_FINGERPRINT_SENSOR_TYPE LOG_MISSING_PATCHES
+unset TARGET_FIRMWARE_PATH TELEPHONY_FEATURES TELEPHONY_LOGGER TELEPHONY_LOGGER_SOURCE TELEPHONY_LOGGER_TARGET
+unset STRONGBOX_WORKER FP_SETTINGS_UTILS BTM_CONTROLLER APE_CONTROLLER APE_CONTROLLER_PATH
+unset -f GET_FINGERPRINT_SENSOR_TYPE LOG_MISSING_PATCHES PATCH_GRAPHICS_COMMON_NDK_DEPENDENCY

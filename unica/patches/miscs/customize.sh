@@ -12,12 +12,17 @@ SMALI_PATCH "system" "system/framework/framework.jar" \
     'ro.product.device' \
     'ro.product.vendor.device'
 
-# shellcheck disable=SC2016
-# Disable RescueParty
-SMALI_PATCH "system" "system/framework/services.jar" \
-    "smali/com/android/server/RescueParty.smali" "return" \
-    '-$$Nest$smisDisabled()Z' \
-    'true'
+# Disable RescueParty when the AOSP implementation is present. Android 17's
+# Samsung framework no longer ships this class or its isDisabled() entrypoint.
+if [ -f "$APKTOOL_DIR/system/framework/services.jar/smali/com/android/server/RescueParty.smali" ]; then
+    # shellcheck disable=SC2016
+    SMALI_PATCH "system" "system/framework/services.jar" \
+        "smali/com/android/server/RescueParty.smali" "return" \
+        '-$$Nest$smisDisabled()Z' \
+        'true'
+else
+    LOG "- AOSP RescueParty implementation is absent; skipping legacy disable patch"
+fi
 
 # Better model detection in FreecessController
 SMALI_PATCH "system" "system/framework/services.jar" \

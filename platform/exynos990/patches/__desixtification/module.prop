@@ -1,0 +1,4 @@
+id=_desixtification
+name=Exynos 990 r11s multilib compatibility
+author=Tisenu100, ExtremeXT, At30c
+description=Imports the r11s ARM32 system libraries and runtime for a 64-bit system base.

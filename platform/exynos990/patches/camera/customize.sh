@@ -69,7 +69,7 @@ if [[ "$SOURCE_PLATFORM_SDK_VERSION" -lt 36 ]]; then
     HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
         "010140f97069059420510034" \
         "010140f91f2003d51f2003d5"
-else
+elif [[ "$SOURCE_PLATFORM_SDK_VERSION" -eq 36 ]]; then
     # Android 16 changed the Camera::connect ABI. Replacing this library with
     # the older pa3qzcx blob makes zygote, cameraserver and the media services
     # fail at link time, so retain the source firmware's matched media stack.
@@ -94,6 +94,21 @@ else
     HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
         "e10740b9e22340b9e00313aa44aa059420020034fa03002a" \
         "e10740b9e22340b9e00313aa44aa059411000014fa03002a"
+else
+    # Android 17 moved both call sites while preserving their semantics.
+    # MediaCodecSource::suspendRecording(bool) remains a no-op, so start the
+    # persistent encoder input active instead of asking that method to resume
+    # it later.
+    HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
+        "140340f9e00315aa810240f91d2b0294e1f4ff9021d83c91e00314aa2200805206310294" \
+        "140340f9e00315aa810240f91d2b0294e1f4ff9021d83c91e00314aa0200805206310294"
+
+    # The Android 17 setupVideoEncoder call site branches 16 instructions to
+    # the normal continuation.  Force that branch when the legacy Exynos HEVC
+    # OMX encoder reports temporal SVC as unsupported.
+    HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
+        "e10f40b9e28b40b9e00313aa11f7059400020034fa03002a" \
+        "e10f40b9e28b40b9e00313aa11f7059410000014fa03002a"
 fi
 LOG_STEP_OUT
 

@@ -71,8 +71,8 @@ elif [[ "$SOURCE_SECURITY_CONFIG_ESE_CHIP_VENDOR" != "none" ]] && [[ "$SOURCE_SE
         SMALI_PATCH "system" "system/app/SecureElement/SecureElement.apk" \
             "smali/com/android/se/internal/UtilExtension.smali" "replace" \
             "supportEseHal()Z" \
-            "$SOURCE_SECURITY_CONFIG_ESE_COS_NAME" \
-            "${TARGET_SECURITY_CONFIG_ESE_COS_NAME//none/}"
+            ", eSE_COS: $SOURCE_SECURITY_CONFIG_ESE_COS_NAME" \
+            ", eSE_COS: ${TARGET_SECURITY_CONFIG_ESE_COS_NAME//none/}"
     fi
     if [[ "$SOURCE_SECURITY_CONFIG_ESE_CHIP_VENDOR" != "$TARGET_SECURITY_CONFIG_ESE_CHIP_VENDOR" ]]; then
         SMALI_PATCH "system" "system/framework/framework.jar" \

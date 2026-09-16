@@ -51,11 +51,25 @@ HEX_PATCH "$WORK_DIR/system/system/lib/libremotedisplay_wfd.so" \
 # Fix the ARM32 __fread_chk overflow observed when RemoteDisplay configures
 # the legacy encoder. ACodec::reconfigEncoder4OtherApps reads 512 bytes into a
 # 255-byte stack buffer and immediately aborts under FORTIFY. Limit the read
-# to 254 bytes so the following NUL terminator remains inside the buffer. The
-# surrounding Thumb instructions make this call site unique.
-HEX_PATCH "$WORK_DIR/system/system/lib/libstagefright.so" \
-    "01214ff4007230462b460097" \
-    "01214ff0fe0230462b460097" || return 1
+# to 254 bytes so the following NUL terminator remains inside the buffer.
+# Android 37 changed register allocation and the call-site encoding.
+WFD_STAGEFRIGHT_HEX="$(xxd -p -c 0 "$WORK_DIR/system/system/lib/libstagefright.so")"
+if grep -q "01214ff4007230462b460097" <<< "$WFD_STAGEFRIGHT_HEX"; then
+    HEX_PATCH "$WORK_DIR/system/system/lib/libstagefright.so" \
+        "01214ff4007230462b460097" \
+        "01214ff0fe0230462b460097" || return 1
+elif grep -q "01214ff4007238463346009428f1e2eb" <<< "$WFD_STAGEFRIGHT_HEX"; then
+    HEX_PATCH "$WORK_DIR/system/system/lib/libstagefright.so" \
+        "01214ff4007238463346009428f1e2eb" \
+        "01214ff0fe0238463346009428f1e2eb" || return 1
+elif grep -q -e "01214ff0fe0230462b460097" \
+        -e "01214ff0fe0238463346009428f1e2eb" <<< "$WFD_STAGEFRIGHT_HEX"; then
+    LOG "- ARM32 libstagefright fread bound is already patched"
+else
+    ABORT "Unsupported ARM32 libstagefright fread call site"
+    return 1
+fi
+unset WFD_STAGEFRIGHT_HEX
 
 # Do not leave an alternative ARM64 graph that can be selected by stale
 # processes in preference to the matching ARM32 stack.

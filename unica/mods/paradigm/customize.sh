@@ -189,8 +189,17 @@ LOG_STEP_OUT
 
 # Game Booster
 LOG "- Downloading latest Game Booster app"
-DOWNLOAD_FILE "$(GET_GALAXY_STORE_DOWNLOAD_URL "com.samsung.android.game.gametools")" \
-    "$WORK_DIR/system/system/priv-app/GameTools_Dream/GameTools_Dream.apk"
+GAME_TOOLS_APK="$WORK_DIR/system/system/priv-app/GameTools_Dream/GameTools_Dream.apk"
+GAME_TOOLS_URL="$(GET_GALAXY_STORE_DOWNLOAD_URL "com.samsung.android.game.gametools")" || true
+if [ "$GAME_TOOLS_URL" ]; then
+    DOWNLOAD_FILE "$GAME_TOOLS_URL" "$GAME_TOOLS_APK"
+elif [ -f "$GAME_TOOLS_APK" ]; then
+    LOG "- Galaxy Store download is unavailable; keeping Game Booster from the source firmware"
+else
+    LOGE "Game Booster is unavailable from both Galaxy Store and source firmware"
+    return 1
+fi
+unset GAME_TOOLS_APK GAME_TOOLS_URL
 
 # Pet Detector in Galaxy AI
 LOG_STEP_IN "- Adding Pet Detector support in Galaxy AI features"

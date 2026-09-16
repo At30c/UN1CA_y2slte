@@ -61,6 +61,20 @@ if [[ "$SOURCE_DVFSAPP_CONFIG_SSRM_POLICY_FILENAME" != "$TARGET_DVFSAPP_CONFIG_S
 
     DECODE_APK "system" "system/priv-app/SamsungDeviceHealthManagerService/SamsungDeviceHealthManagerService.apk"
 
+    # The class is obfuscated and was renamed again in Android 17. Resolve it
+    # from the source policy literal instead of tying the patch to a class name.
+    SSRM_FEATURE_ROOT="$APKTOOL_DIR/system/priv-app/SamsungDeviceHealthManagerService/SamsungDeviceHealthManagerService.apk"
+    if [ ! -f "$SSRM_FEATURE_ROOT/$SSRM_FEATURE_SMALI" ]; then
+        SSRM_FEATURE_MATCHES="$(grep -RFl --include='*.smali' \
+            "$SOURCE_DVFSAPP_CONFIG_SSRM_POLICY_FILENAME" "$SSRM_FEATURE_ROOT" || true)"
+        if [ "$(printf '%s\n' "$SSRM_FEATURE_MATCHES" | sed '/^$/d' | wc -l)" -ne 1 ]; then
+            _LOG "Unable to uniquely locate the SDHMS SSRM feature class"
+        else
+            SSRM_FEATURE_SMALI="${SSRM_FEATURE_MATCHES#"$SSRM_FEATURE_ROOT/"}"
+            LOG "- Resolved SDHMS SSRM feature class: $SSRM_FEATURE_SMALI"
+        fi
+    fi
+
     if [[ "$SOURCE_DVFSAPP_CONFIG_SSRM_POLICY_FILENAME" != "ssrm_default" ]] && \
             [[ "$TARGET_DVFSAPP_CONFIG_SSRM_POLICY_FILENAME" == "ssrm_default" ]]; then
         LOG "- Deleting /system/system/priv-app/SamsungDeviceHealthManagerService/SamsungDeviceHealthManagerService.apk/assets/siop_default"
@@ -107,4 +121,5 @@ else
 fi
 
 unset -f _LOG
-unset DVFS_FEATURE_SMALI DVFS_PROPERTIES_SMALI SSRM_FEATURE_SMALI
+unset DVFS_FEATURE_SMALI DVFS_PROPERTIES_SMALI SSRM_FEATURE_SMALI \
+    SSRM_FEATURE_ROOT SSRM_FEATURE_MATCHES

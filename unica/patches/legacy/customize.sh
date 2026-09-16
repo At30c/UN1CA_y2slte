@@ -463,11 +463,16 @@ if [ "$TARGET_PLATFORM_SDK_VERSION" -lt "35" ]; then
                 'const v3, 0x7f420888' \
                 'const v3, 0x7f000789'
         fi
+        SAMSUNG_CAMERA_ENCODER_SMALI="smali_classes3/com/samsung/android/sum/core/filter/EncoderFilter.smali"
+        if [ "$SOURCE_PLATFORM_SDK_VERSION" -ge 37 ]; then
+            SAMSUNG_CAMERA_ENCODER_SMALI="smali_classes4/com/samsung/android/sum/core/filter/EncoderFilter.smali"
+        fi
         SMALI_PATCH "system" "system/priv-app/SamsungCamera/SamsungCamera.apk" \
-            "smali_classes3/com/samsung/android/sum/core/filter/EncoderFilter.smali" "replace" \
+            "$SAMSUNG_CAMERA_ENCODER_SMALI" "replace" \
             'configCodec(Lcom/samsung/android/sum/core/message/Message;)V' \
             'const v4, 0x7f420888' \
             'const v4, 0x7f000789'
+        unset SAMSUNG_CAMERA_ENCODER_SMALI
         SMALI_PATCH "system" "system/priv-app/vexfwk_service/vexfwk_service.apk" \
             "smali/com/samsung/android/sum/core/filter/EncoderFilter.smali" "replace" \
             'configCodec(Lcom/samsung/android/sum/core/message/Message;)V' \
@@ -514,16 +519,21 @@ if [ "$TARGET_PLATFORM_SDK_VERSION" -lt "36" ]; then
             "onChange(Z)V" \
             "CLOUDY_WORK_MODE" \
             "1"
+        USB_HOST_RESTRICTOR_HANDLER="smali_classes2/com/android/server/usb/UsbHostRestrictor\$8.smali"
+        if [ "$SOURCE_PLATFORM_SDK_VERSION" -ge 37 ]; then
+            USB_HOST_RESTRICTOR_HANDLER="smali_classes2/com/android/server/usb/UsbHostRestrictor\$11.smali"
+        fi
         SMALI_PATCH "system" "system/framework/services.jar" \
-            "smali_classes2/com/android/server/usb/UsbHostRestrictor\$8.smali" "replace" \
+            "$USB_HOST_RESTRICTOR_HANDLER" "replace" \
             "handleMessage(Landroid/os/Message;)V" \
             "SUNNY_WORK_MODE" \
             "0"
         SMALI_PATCH "system" "system/framework/services.jar" \
-            "smali_classes2/com/android/server/usb/UsbHostRestrictor\$8.smali" "replace" \
+            "$USB_HOST_RESTRICTOR_HANDLER" "replace" \
             "handleMessage(Landroid/os/Message;)V" \
             "RAINY_RESTRICT_MODE" \
             "2"
+        unset USB_HOST_RESTRICTOR_HANDLER
         SMALI_PATCH "system" "system/framework/services.jar" \
             "smali_classes2/com/android/server/usb/UsbService\$Lifecycle.smali" "replace" \
             "onBootPhase(I)V" \

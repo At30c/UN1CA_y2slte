@@ -26,10 +26,23 @@ if [ ! -f "$WORK_DIR/system/system/priv-app/ChoiDujour/ChoiDujour.apk" ]; then
     SOFTWARE_UPDATE_UTILS="$(find "$SECSETTINGS_APK" \
         -type f -path '*/com/samsung/android/settings/softwareupdate/SoftwareUpdateUtils.smali' -printf '%P\n' -quit)"
     [ "$SOFTWARE_UPDATE_UTILS" ] || ABORT "SoftwareUpdateUtils.smali not found"
-    SMALI_PATCH "system" "system/priv-app/SecSettings/SecSettings.apk" \
-        "$SOFTWARE_UPDATE_UTILS" "return" \
-        'isOTAUpgradeAllowed(Landroid/content/Context;)Z' \
-        'false'
+    if grep -q -F '.method public static isOTAUpgradeAllowed(Landroid/content/Context;)Z' \
+            "$SECSETTINGS_APK/$SOFTWARE_UPDATE_UTILS"; then
+        SMALI_PATCH "system" "system/priv-app/SecSettings/SecSettings.apk" \
+            "$SOFTWARE_UPDATE_UTILS" "return" \
+            'isOTAUpgradeAllowed(Landroid/content/Context;)Z' \
+            'false'
+    else
+        SOFTWARE_UPDATE_CONTROLLER="$(find "$SECSETTINGS_APK" \
+            -type f -path '*/com/samsung/android/settings/homepage/TopLevelSoftwareUpdatePreferenceController.smali' \
+            -printf '%P\n' -quit)"
+        [ "$SOFTWARE_UPDATE_CONTROLLER" ] || \
+            ABORT "TopLevelSoftwareUpdatePreferenceController.smali not found"
+        SMALI_PATCH "system" "system/priv-app/SecSettings/SecSettings.apk" \
+            "$SOFTWARE_UPDATE_CONTROLLER" "return" \
+            'getAvailabilityStatus()I' \
+            '3'
+    fi
     unset SOFTWARE_UPDATE_UTILS
 fi
 
@@ -113,26 +126,50 @@ TOP_LEVEL_KEYS_COLLECTOR="$(find "$APKTOOL_DIR/system/priv-app/SecSettingsIntell
     -printf '%P\n' -quit)"
 [ "$TOP_LEVEL_KEYS_COLLECTOR" ] || ABORT "TopLevelKeysCollector.smali not found"
 LOG "- Patching \"$TOP_LEVEL_KEYS_COLLECTOR\" in /system/system/priv-app/SecSettingsIntelligence/SecSettingsIntelligence.apk"
-SMALI_PATCH "system" "system/priv-app/SecSettingsIntelligence/SecSettingsIntelligence.apk" \
-    "$TOP_LEVEL_KEYS_COLLECTOR" "replace" \
-    '<init>(Landroid/content/Context;)V' \
-    '.locals 36' \
-    '.locals 37' \
-    > /dev/null
-SMALI_PATCH "system" "system/priv-app/SecSettingsIntelligence/SecSettingsIntelligence.apk" \
-    "$TOP_LEVEL_KEYS_COLLECTOR" "replace" \
-    '<init>(Landroid/content/Context;)V' \
-    'filled-new-array/range {v1 .. v35}, [Ljava/lang/String;' \
-    '    const-string v36, "top_level_unica"\n\n    filled-new-array/range {v1 .. v36}, [Ljava/lang/String;' \
-    > /dev/null
+TOP_LEVEL_KEYS_FILE="$APKTOOL_DIR/system/priv-app/SecSettingsIntelligence/SecSettingsIntelligence.apk/$TOP_LEVEL_KEYS_COLLECTOR"
+if ! grep -q -F '"top_level_unica"' "$TOP_LEVEL_KEYS_FILE"; then
+    TOP_LEVEL_KEYS_LOCALS="$(awk '
+        /^\.method .*<init>\(Landroid\/content\/Context;\)V$/ { inside=1; next }
+        inside && /^    \.locals [0-9]+$/ { print $2; exit }
+    ' "$TOP_LEVEL_KEYS_FILE")"
+    TOP_LEVEL_KEYS_ARRAY="$(awk '
+        /^\.method .*<init>\(Landroid\/content\/Context;\)V$/ { inside=1; next }
+        inside && /filled-new-array\/range \{v1 \.\. v[0-9]+\}, \[Ljava\/lang\/String;/ {
+            print
+            exit
+        }
+        inside && /^\.end method$/ { exit }
+    ' "$TOP_LEVEL_KEYS_FILE")"
+    if [[ ! "$TOP_LEVEL_KEYS_LOCALS" =~ ^[0-9]+$ ]] || \
+            [[ ! "$TOP_LEVEL_KEYS_ARRAY" =~ v1[[:space:]]+\.\.[[:space:]]+v([0-9]+) ]]; then
+        ABORT "Unable to resolve TopLevelKeysCollector registers"
+    fi
+    TOP_LEVEL_KEYS_LAST_REGISTER="${BASH_REMATCH[1]}"
+    TOP_LEVEL_KEYS_NEW_REGISTER=$((TOP_LEVEL_KEYS_LAST_REGISTER + 1))
+    TOP_LEVEL_KEYS_NEW_LOCALS=$((TOP_LEVEL_KEYS_LOCALS + 1))
+    SMALI_PATCH "system" "system/priv-app/SecSettingsIntelligence/SecSettingsIntelligence.apk" \
+        "$TOP_LEVEL_KEYS_COLLECTOR" "replace" \
+        '<init>(Landroid/content/Context;)V' \
+        ".locals $TOP_LEVEL_KEYS_LOCALS" \
+        ".locals $TOP_LEVEL_KEYS_NEW_LOCALS" \
+        > /dev/null
+    SMALI_PATCH "system" "system/priv-app/SecSettingsIntelligence/SecSettingsIntelligence.apk" \
+        "$TOP_LEVEL_KEYS_COLLECTOR" "replace" \
+        '<init>(Landroid/content/Context;)V' \
+        "$TOP_LEVEL_KEYS_ARRAY" \
+        "    const-string v$TOP_LEVEL_KEYS_NEW_REGISTER, \"top_level_unica\"\n\n    filled-new-array/range {v1 .. v$TOP_LEVEL_KEYS_NEW_REGISTER}, [Ljava/lang/String;" \
+        > /dev/null
+fi
 
 # Show Vulkan renderer toggle if required
 if [[ "$(GET_PROP "ro.hwui.use_vulkan")" != "true" ]]; then
     SET_PROP "system" "persist.sys.unica.vulkan" "false"
 fi
 
-unset PATCH_INST CONTENT SECSETTINGS_APK SOFTWARE_UPDATE_UTILS
+unset PATCH_INST CONTENT SECSETTINGS_APK SOFTWARE_UPDATE_UTILS SOFTWARE_UPDATE_CONTROLLER
 unset ONEUI_VERSION_CONTROLLER MODEL_NAME_GETTER SEARCH_INDEXABLE_RESOURCES SEARCH_FEATURE_PROVIDER
 unset TOP_LEVEL_KEYS_COLLECTOR
+unset TOP_LEVEL_KEYS_FILE TOP_LEVEL_KEYS_LOCALS TOP_LEVEL_KEYS_ARRAY
+unset TOP_LEVEL_KEYS_LAST_REGISTER TOP_LEVEL_KEYS_NEW_REGISTER TOP_LEVEL_KEYS_NEW_LOCALS
 
 LOG_STEP_OUT
