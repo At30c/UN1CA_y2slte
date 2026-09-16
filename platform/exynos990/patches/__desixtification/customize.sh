@@ -176,6 +176,9 @@ LOG_STEP_OUT
 SET_PROP "vendor" "ro.vendor.product.cpu.abilist" "arm64-v8a"
 SET_PROP "vendor" "ro.vendor.product.cpu.abilist32" ""
 SET_PROP "vendor" "ro.vendor.product.cpu.abilist64" "arm64-v8a"
+SET_PROP "odm" "ro.odm.product.cpu.abilist" "arm64-v8a"
+SET_PROP "odm" "ro.odm.product.cpu.abilist32" ""
+SET_PROP "odm" "ro.odm.product.cpu.abilist64" "arm64-v8a"
 SET_PROP "vendor" "ro.zygote" "zygote64"
 SET_PROP "vendor" "dalvik.vm.dex2oat64.enabled" "true"
 unset DESIX_LINK DESIX_LIB_CONTEXT DESIX_LIB_ENTRY DESIX_LIB_MODE DESIX_LIB_PATH DESIX_LIB_ROOT

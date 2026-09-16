@@ -1,4 +1,4 @@
 id=vndk
 name=VNDK
-author=salvogiangri, Fede2782
-description=Checks the source device vendor API and replaces it if it's mismatched from target device.
+author=salvogiangri, Fede2782, At30c
+description=Restores and validates the target vendor's legacy VNDK runtime on modern framework bases.

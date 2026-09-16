@@ -10,6 +10,48 @@ This document records the investigation and changes made after the request to in
 - The fixes described below were prepared on `seventeen`; check the branch history for their final commit identifiers.
 - Do not discard unrelated local modifications. The working tree already contains other ongoing work.
 
+## Persistent logcat capture
+
+A dedicated, reconnect-safe logcat capture was added at:
+
+```text
+scripts/capture_logcat_tmux.sh
+```
+
+The detached `y2s-logcat` tmux session was started on 2026-09-16 at 16:49:21
+(-0300). Its current output is:
+
+```text
+out/target/y2s/boot-diagnostics-20260916-164921/logcat.txt
+```
+
+The script remains in an infinite loop even when no device is connected. It
+waits for ADB, confirms that `adb get-state` reports `device`, writes a
+`DEVICE_CONNECTED_<date>_<time>` marker, captures all logcat buffers with
+`threadtime`, writes `LOGCAT_DISCONNECTED_<date>_<time>` when the transport
+goes away, and then waits for the next connection. ADB-server failures and
+not-ready transports are retried instead of closing the tmux pane.
+
+Useful commands:
+
+```bash
+tmux attach -t y2s-logcat
+tmux capture-pane -pt y2s-logcat:0 -S -40
+```
+
+The earlier `y2s-logs` session remains active with its existing logcat,
+dmesg, and snapshot panes so that the previous diagnostics are not
+interrupted. The new session is the canonical persistent logcat capture for
+future boots. Set `ADB_SERIAL` to target a specific device when more than one
+ADB transport is present.
+
+Validation performed after adding the script:
+
+1. `bash -n scripts/capture_logcat_tmux.sh`
+2. `git diff --check`
+3. Confirmed that `y2s-logcat` remains attached while the device is connected
+   and that its log contains `DEVICE_CONNECTED_2026-09-16_16:49:21-0300`.
+
 ## Logs inspected
 
 The latest active capture is:
@@ -128,3 +170,24 @@ gralloc-mapper is missing
 ```
 
 Then identify the first fatal exception in the newest boot cycle instead of acting on errors inherited from older cycles in the same appended log file.
+
+## Selective repository upload
+
+On 2026-09-16, the tracked local changes were selectively prepared for
+upload on branch `seventeen`. The following tracked files were intentionally
+left out and remain local for separate review:
+
+```text
+platform/exynos990/patches/extremekrnl/customize.sh
+scripts/download_fw.sh
+scripts/internal/build_incremental_ota_zip.sh
+scripts/make_rom.sh
+```
+
+Untracked files were also intentionally left out:
+
+```text
+apply.out
+last_kmsg
+scripts/capture_logcat_tmux.sh
+```

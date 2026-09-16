@@ -46,6 +46,26 @@ COMPARE_SEC_BUILD_VERSION()
     return 0
 }
 
+# ODIN_FIRMWARE_IS_COMPLETE <firmware directory>
+# A .downloaded marker alone is not sufficient: users and CI cleanup jobs may
+# remove the large Odin archives while leaving the small marker behind.
+ODIN_FIRMWARE_IS_COMPLETE()
+{
+    _CHECK_NON_EMPTY_PARAM "FIRMWARE_DIR" "$1" || return 1
+
+    local FIRMWARE_DIR="$1"
+    local DOWNLOADED_FIRMWARE
+    local PDA
+
+    [[ -s "$FIRMWARE_DIR/.downloaded" ]] || return 1
+    DOWNLOADED_FIRMWARE="$(cat "$FIRMWARE_DIR/.downloaded")"
+    PDA="$(cut -d "/" -f 1 -s <<< "$DOWNLOADED_FIRMWARE")"
+    [[ -n "$PDA" ]] || return 1
+
+    find "$FIRMWARE_DIR" -maxdepth 1 -type f -name "AP_${PDA}*.md5" -print -quit | grep -q . || return 1
+    find "$FIRMWARE_DIR" -maxdepth 1 -type f -name "BL_${PDA}*.md5" -print -quit | grep -q . || return 1
+}
+
 # EXTRACT_FILE_FROM_TAR <tar> <file>
 # Extract the desired file from the supplied tar archive.
 EXTRACT_FILE_FROM_TAR()
