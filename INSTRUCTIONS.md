@@ -191,3 +191,51 @@ apply.out
 last_kmsg
 scripts/capture_logcat_tmux.sh
 ```
+
+## PackageManagerService verifier correction
+
+The boot cycle beginning at
+`DEVICE_CONNECTED_2026-09-16_18:45:14-0300` exposed a second verifier
+failure in `PackageManagerService.verifyReplacingVersionCode(...)`:
+
+```text
+register v3 has type Reference: java.lang.String but expected Integer
+```
+
+The fault was in
+`unica/mods/settings/smali/system/framework/services.jar/0002-Allow-app-downgrade.patch`.
+Its injected Settings lookup overwrote live registers `v3` and `v4`; `v3`
+was the integer argument later passed to `isDowngradePermitted(IZ)Z`.
+
+The first correction attempted to use local registers `v16` through `v18`,
+but Apktool's non-range smali instructions reject registers above `v15` even
+when the method has enough total locals. The patch now uses the method
+parameter aliases `p0` through `p2`, whose original values were already
+copied into locals and are no longer needed at this point. It uses
+`move-object/from16`, `invoke-virtual/range`, `const-string`, `const/16`, and
+`invoke-static/range`, preserving the original `v3` and `v4` types:
+
+```smali
+iget-object v0, v2, Lcom/android/server/pm/InstallPackageHelper;->mContext:Landroid/content/Context;
+move-object/from16 p0, v0
+invoke-virtual/range {p0 .. p0}, Landroid/content/Context;->getContentResolver()Landroid/content/ContentResolver;
+move-result-object p0
+const-string p1, "unica_allow_downgrade"
+const/16 p2, 0x0
+invoke-static/range {p0 .. p2}, Landroid/provider/Settings$System;->getInt(Landroid/content/ContentResolver;Ljava/lang/String;I)I
+move-result v0
+```
+
+Validation performed:
+
+1. Reversed the old patch against the generated `PackageManagerService.smali`.
+2. Applied the corrected patch successfully to the reconstructed clean file.
+3. Confirmed that `v3` remains the integer argument at the
+   `isDowngradePermitted(IZ)Z` call and that the new invoke uses contiguous
+   parameter aliases `p0..p2`.
+4. Rebuilt the decoded `services.jar` directly with Apktool v3.0.3-11;
+   smaling and APK assembly completed successfully.
+5. No full ROM build or device installation has been performed yet.
+
+The next required step is a fresh build and boot test so the corrected
+`services.jar` replaces the currently installed bytecode.
