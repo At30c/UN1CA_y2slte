@@ -62,3 +62,7 @@ system/priv-app/SamsungCamera/oat/arm64 0 0 755 capabilities=0x0
 system/priv-app/SamsungCamera/oat/arm64/SamsungCamera.art 0 0 644 capabilities=0x0
 system/priv-app/SamsungCamera/oat/arm64/SamsungCamera.odex 0 0 644 capabilities=0x0
 system/priv-app/SamsungCamera/oat/arm64/SamsungCamera.vdex 0 0 644 capabilities=0x0
+system/etc 0 0 755 capabilities=0x0
+system/etc/cgroups.json 0 0 644 capabilities=0x0
+system/etc/task_profiles.json 0 0 644 capabilities=0x0
+system/lib64/libcgrouprc.so 0 0 644 capabilities=0x0
