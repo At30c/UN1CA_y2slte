@@ -18,12 +18,13 @@ if [ -z "${UNICA_MAKE_ROM_SNAPSHOT:-}" ]; then
 fi
 
 # [
-source "$SRC_DIR/scripts/utils/build_utils.sh" || exit 1
+source "$SRC_DIR/scripts/utils/firmware_utils.sh" || exit 1
 
 FORCE=false
 USE_APK_CACHE=false
 BUILD_ROM=false
 BUILD_ZIP=true
+BUILD_INCREMENTAL=false
 SKIP_DEBUG_INSTALL=false
 
 START_TIME="$(date +%s)"
@@ -32,13 +33,33 @@ SOURCE_FIRMWARE_PATH="$(cut -d "/" -f 1 -s <<< "$SOURCE_FIRMWARE")_$(cut -d "/" 
 TARGET_FIRMWARE_PATH="$(cut -d "/" -f 1 -s <<< "$TARGET_FIRMWARE")_$(cut -d "/" -f 2 -s <<< "$TARGET_FIRMWARE")"
 APK_CACHE_DIR="$OUT_DIR/target/$TARGET_CODENAME/apk_cache"
 APK_DECODE_CACHE_DIR="$OUT_DIR/target/$TARGET_CODENAME/apk_decode_cache"
+APK_BUILD_LIST="$OUT_DIR/target/$TARGET_CODENAME/tmp/apk-cache-build.list"
+APK_CACHE_FORMAT="unica-apk-cache-v2"
+INCREMENTAL_DIR="$OUT_DIR/target/$TARGET_CODENAME/incremental"
+INCREMENTAL_BASE="$INCREMENTAL_DIR/base-target-files.zip"
+INCREMENTAL_TARGET="$INCREMENTAL_DIR/target-files.zip"
 
-GET_PATCHED_APK_TREE_HASH()
+GET_PATCHED_APK_HASH()
 {
-    [ -d "$APKTOOL_DIR" ] || return 1
+    local DECODED_PATH="$1"
+    local RELATIVE_PATH="$2"
+    local CERT_PREFIX="aosp"
 
-    find "$APKTOOL_DIR" -type f -print0 | sort -z | \
-        xargs -0 sha256sum | sha256sum | cut -d " " -f 1
+    [ -d "$DECODED_PATH" ] || return 1
+    $ROM_IS_OFFICIAL && CERT_PREFIX="unica"
+
+    {
+        printf '%s\n' "$APK_CACHE_FORMAT" "$RELATIVE_PATH"
+        find "$DECODED_PATH" -type f \
+            ! -path "$DECODED_PATH/build/*" \
+            ! -path "$DECODED_PATH/dist/*" \
+            -print0 | sort -z | xargs -0 sha256sum
+        sha256sum "$SRC_DIR/scripts/apktool.sh"
+        if [[ "$RELATIVE_PATH" == *.apk ]]; then
+            sha256sum "$SRC_DIR/security/${CERT_PREFIX}_platform.x509.pem" \
+                "$SRC_DIR/security/${CERT_PREFIX}_platform.pk8"
+        fi
+    } | sha256sum | cut -d " " -f 1
 }
 
 GET_BUILT_APK_PATH()
@@ -69,61 +90,91 @@ GET_BUILT_APK_PATH()
 
 RESTORE_APK_CACHE()
 {
-    local TREE_HASH
+    local CACHE_HASH
+    local CURRENT_HASH
+    local DECODED_PATH
     local RELATIVE_PATH
     local OUTPUT_FILE
+    local HIT_COUNT="0"
+    local MISS_COUNT="0"
 
-    TREE_HASH="$(GET_PATCHED_APK_TREE_HASH)" || return 1
-    [ -f "$APK_CACHE_DIR/.tree_hash" ] || return 1
-    [ "$(cat "$APK_CACHE_DIR/.tree_hash")" = "$TREE_HASH" ] || return 1
+    mkdir -p "$(dirname "$APK_BUILD_LIST")"
+    : > "$APK_BUILD_LIST"
 
     while IFS= read -r -d '' f; do
+        DECODED_PATH="$f"
         RELATIVE_PATH="${f/$APKTOOL_DIR\//}"
         OUTPUT_FILE="$(GET_BUILT_APK_PATH "$RELATIVE_PATH")"
-        [ -f "$APK_CACHE_DIR/files/$RELATIVE_PATH" ] || return 1
-        mkdir -p "$(dirname "$OUTPUT_FILE")"
-        cp -a "$APK_CACHE_DIR/files/$RELATIVE_PATH" "$OUTPUT_FILE"
+        CURRENT_HASH="$(GET_PATCHED_APK_HASH "$DECODED_PATH" "$RELATIVE_PATH")" || return 1
+        CACHE_HASH="$(cat "$APK_CACHE_DIR/hashes/$RELATIVE_PATH" 2> /dev/null || true)"
+
+        if [ "$CACHE_HASH" = "$CURRENT_HASH" ] && \
+                [ -f "$APK_CACHE_DIR/files/$RELATIVE_PATH" ]; then
+            mkdir -p "$(dirname "$OUTPUT_FILE")"
+            cp -a --reflink=auto "$APK_CACHE_DIR/files/$RELATIVE_PATH" "$OUTPUT_FILE"
+            HIT_COUNT=$((HIT_COUNT + 1))
+        else
+            printf '%s\0' "$DECODED_PATH" >> "$APK_BUILD_LIST"
+            MISS_COUNT=$((MISS_COUNT + 1))
+        fi
     done < <(find "$APKTOOL_DIR" -type d \( -name "*.apk" -o -name "*.jar" \) -print0)
 
-    LOG "- Reused APK/JAR cache ($TREE_HASH)"
+    LOG "- APK/JAR incremental cache: $HIT_COUNT reused, $MISS_COUNT to build"
     return 0
 }
 
 UPDATE_APK_CACHE()
 {
-    local TREE_HASH
+    local CACHE_TMP
+    local DECODED_PATH
+    local FILE_HASH
     local RELATIVE_PATH
     local OUTPUT_FILE
 
     [ -d "$APKTOOL_DIR" ] || return 0
-    TREE_HASH="$(GET_PATCHED_APK_TREE_HASH)" || return 1
-
-    rm -rf "$APK_CACHE_DIR"
-    mkdir -p "$APK_CACHE_DIR/files"
+    CACHE_TMP="$APK_CACHE_DIR.tmp.$$"
+    rm -rf "$CACHE_TMP"
+    mkdir -p "$CACHE_TMP/files" "$CACHE_TMP/hashes"
 
     while IFS= read -r -d '' f; do
+        DECODED_PATH="$f"
         RELATIVE_PATH="${f/$APKTOOL_DIR\//}"
         OUTPUT_FILE="$(GET_BUILT_APK_PATH "$RELATIVE_PATH")"
         [ -f "$OUTPUT_FILE" ] || return 1
-        mkdir -p "$APK_CACHE_DIR/files/$(dirname "$RELATIVE_PATH")"
-        cp -a "$OUTPUT_FILE" "$APK_CACHE_DIR/files/$RELATIVE_PATH"
+        FILE_HASH="$(GET_PATCHED_APK_HASH "$DECODED_PATH" "$RELATIVE_PATH")" || return 1
+        mkdir -p "$CACHE_TMP/files/$(dirname "$RELATIVE_PATH")" \
+            "$CACHE_TMP/hashes/$(dirname "$RELATIVE_PATH")"
+        cp -a --reflink=auto "$OUTPUT_FILE" "$CACHE_TMP/files/$RELATIVE_PATH"
+        printf '%s' "$FILE_HASH" > "$CACHE_TMP/hashes/$RELATIVE_PATH"
     done < <(find "$APKTOOL_DIR" -type d \( -name "*.apk" -o -name "*.jar" \) -print0)
 
-    printf '%s' "$TREE_HASH" > "$APK_CACHE_DIR/.tree_hash"
-    LOG "- Updated APK/JAR cache ($TREE_HASH)"
+    printf '%s' "$APK_CACHE_FORMAT" > "$CACHE_TMP/.format"
+    rm -rf "$APK_CACHE_DIR"
+    mv "$CACHE_TMP" "$APK_CACHE_DIR"
+    LOG "- Updated per-file APK/JAR cache"
 }
 
 BUILD_APKS()
 {
+    local BUILD_LIST="${1:-}"
     local MAX_JOBS
     MAX_JOBS="$(nproc)"
     [ "$MAX_JOBS" -gt "8" ] && MAX_JOBS="8"
 
     if [ -d "$APKTOOL_DIR" ]; then
+        if [ -n "$BUILD_LIST" ] && [ ! -s "$BUILD_LIST" ]; then
+            LOG "- All APKs/JARs were restored from incremental cache"
+            return 0
+        fi
+
         LOG_STEP_IN true "Building APKs/JARs"
 
         # shellcheck disable=SC2016
-        find "$APKTOOL_DIR" -type d \( -name "*.apk" -o -name "*.jar" \) -print0 | xargs -0 -I "{}" -P "$MAX_JOBS" \
+        if [ -n "$BUILD_LIST" ]; then
+            cat "$BUILD_LIST"
+        else
+            find "$APKTOOL_DIR" -type d \( -name "*.apk" -o -name "*.jar" \) -print0
+        fi | xargs -0 -r -I "{}" -P "$MAX_JOBS" \
             bash -c '
                 FILE="${1/$APKTOOL_DIR\//}"
                 PARTITION="$(cut -d "/" -f 1 -s <<< "$FILE")"
@@ -157,6 +208,8 @@ PREPARE_SCRIPT()
             USE_APK_CACHE=true
         elif [[ "$1" == "--no-rom-zip" ]] || [[ "$1" == "-z" ]]; then
             BUILD_ZIP=false
+        elif [[ "$1" == "--incremental" ]] || [[ "$1" == "-i" ]]; then
+            BUILD_INCREMENTAL=true
         else
             if [[ "$1" == "-"* ]]; then
                 LOGE "Unknown option: $1"
@@ -194,7 +247,8 @@ PRINT_USAGE()
 {
     echo "Usage: make_rom [options]" >&2
     echo " -f, --force : Force ROM build" >&2
-    echo " -c, --use-apk-cache : Reuse decoded and compiled APKs/JARs when sources match" >&2
+    echo " -c, --use-apk-cache : Incrementally rebuild only changed APKs/JARs" >&2
+    echo " -i, --incremental : Build a block-level update from the previous target-files snapshot" >&2
     echo " --no-rom-zip : Do not build ROM zip" >&2
 }
 # ]
@@ -244,7 +298,8 @@ if $BUILD_ROM; then
     [ -d "$APKTOOL_DIR" ] && rm -rf "$APKTOOL_DIR"
 
     if [ ! -f "$FW_DIR/$SOURCE_FIRMWARE_PATH/.extracted" ] || [ ! -f "$FW_DIR/$TARGET_FIRMWARE_PATH/.extracted" ]; then
-        if [ ! -f "$ODIN_DIR/$SOURCE_FIRMWARE_PATH/.downloaded" ] || [ ! -f "$ODIN_DIR/$TARGET_FIRMWARE_PATH/.downloaded" ]; then
+        if ! ODIN_FIRMWARE_IS_COMPLETE "$ODIN_DIR/$SOURCE_FIRMWARE_PATH" || \
+                ! ODIN_FIRMWARE_IS_COMPLETE "$ODIN_DIR/$TARGET_FIRMWARE_PATH"; then
             LOG_STEP_IN true "Downloading required firmwares"
             "$SRC_DIR/scripts/download_fw.sh" || exit 1
             LOG_STEP_OUT
@@ -280,23 +335,45 @@ if $BUILD_ROM; then
         LOG_STEP_OUT
     fi
 
-    if $USE_APK_CACHE && RESTORE_APK_CACHE; then
-        LOG "Skipping APK/JAR compilation"
+    if $USE_APK_CACHE; then
+        RESTORE_APK_CACHE || exit 1
+        BUILD_APKS "$APK_BUILD_LIST"
     else
-        if $USE_APK_CACHE; then
-            LOGW "APK/JAR cache is missing or stale. Rebuilding it."
-        fi
         BUILD_APKS
-        UPDATE_APK_CACHE || exit 1
     fi
+    UPDATE_APK_CACHE || exit 1
 
     echo -n "$(GET_WORK_DIR_HASH)" > "$WORK_DIR/.completed"
 fi
 
 if $BUILD_ZIP; then
-    LOG_STEP_IN true "Creating zip"
-    "$SRC_DIR/scripts/internal/build_flashable_zip.sh" || exit 1
-    LOG_STEP_OUT
+    if $BUILD_INCREMENTAL; then
+        mkdir -p "$INCREMENTAL_DIR"
+        rm -f "$INCREMENTAL_TARGET"
+
+        LOG_STEP_IN true "Creating incremental target-files"
+        "$SRC_DIR/scripts/internal/create_target_files_zip.sh" "$INCREMENTAL_TARGET" || exit 1
+        LOG_STEP_OUT
+
+        LOG_STEP_IN true "Creating incremental ROM zip"
+        if [ -f "$INCREMENTAL_BASE" ]; then
+            "$SRC_DIR/scripts/build_flashable_zip.sh" \
+                --incremental "$INCREMENTAL_BASE" "$INCREMENTAL_TARGET" || exit 1
+        else
+            LOGW "No incremental base exists; creating a full ZIP and establishing the baseline"
+            "$SRC_DIR/scripts/build_flashable_zip.sh" "$INCREMENTAL_TARGET" || exit 1
+        fi
+        LOG_STEP_OUT
+
+        # Promote the target only after the ZIP was generated successfully. A
+        # failed build must never destroy the last known installable baseline.
+        mv -f "$INCREMENTAL_TARGET" "$INCREMENTAL_BASE"
+        LOG "- Updated incremental baseline: ${INCREMENTAL_BASE//$SRC_DIR\//}"
+    else
+        LOG_STEP_IN true "Creating zip"
+        "$SRC_DIR/scripts/internal/build_flashable_zip.sh" || exit 1
+        LOG_STEP_OUT
+    fi
 fi
 
 exit 0

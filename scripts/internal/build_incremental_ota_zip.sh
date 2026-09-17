@@ -508,8 +508,14 @@ done
 
 while IFS= read -r f; do
     IMG="$(basename "$f")"
-    LOG "- Copying $IMG from target files"
-    mv -f "$f" "$TMP_DIR/$IMG"
+    if [ -f "$TMP_DIR/source/$IMG" ] && \
+            cmp -s "$TMP_DIR/source/$IMG" "$f"; then
+        LOG "- Skipping unchanged $IMG"
+        rm -f "$f"
+    else
+        LOG "- Copying changed $IMG from target files"
+        mv -f "$f" "$TMP_DIR/$IMG"
+    fi
 done < <(find "$TMP_DIR/target" -maxdepth 1 -type f -name "*.img")
 
 while IFS= read -r f; do
