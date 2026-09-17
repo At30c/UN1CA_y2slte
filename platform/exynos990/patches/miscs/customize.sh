@@ -98,18 +98,6 @@ sed -i "${LINE}s/,fileencryption=ice//g;${LINE}s/,fileencryption=aes-256-xts:aes
 # ODE
 sed -i -e "/ODE/d" -e "/keydata/d" -e "/keyrefuge/d" "$WORK_DIR/vendor/etc/fstab.exynos990"
 
-# Adapt the downloaded Exynos 2100 initial-density and ueventd layout fixes
-# to the target's own Exynos 990 vendor files.
-LOG_STEP_IN "- Setting initial vendor display density"
-LCD_DENSITY="$(GET_PROP "vendor" "ro.sf.lcd_density")"
-if [ -z "$LCD_DENSITY" ]; then
-    ABORT "ro.sf.lcd_density prop not found in vendor"
-    return 1
-fi
-SET_PROP "vendor" "ro.sf.init.lcd_density" "$LCD_DENSITY"
-unset LCD_DENSITY
-LOG_STEP_OUT
-
 if [ -f "$WORK_DIR/vendor/ueventd.rc" ]; then
     LOG "- Moving legacy vendor ueventd configuration to vendor/etc"
     mkdir -p "$WORK_DIR/vendor/etc"
