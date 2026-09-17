@@ -57,7 +57,7 @@
 
     <overheatcontrol>
         <complex>
-            <DEX formula="SKIN" temp="470" />
+            <!-- The target SDHMS enum has no DEX overheat-complex type. -->
         </complex>
     </overheatcontrol>
     <modelsettings>
