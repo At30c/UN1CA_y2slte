@@ -422,9 +422,132 @@ asset-installation branches, even though the repository already provides the
 separate compatible `assets/ssrm_default.xml` file.
 
 The script now copies `$MODPATH/assets/ssrm_default.xml` for that destination
-in both branches. This keeps the DEX entry out of the SSRM fallback policy
-while preserving the separate SIOP policy. No ROM build or device install was
-performed after this source correction; build and boot-test it next, then
+in both branches. This removes the accidental DEX entry from the SSRM fallback
+policy; the separate SIOP fallback required the additional correction below.
+No ROM build or device install was performed after this source correction; build and boot-test it next, then
 verify that `No enum constant ...OverheatComplexType.DEX`, repeated
 `com.sec.android.sdhms` crashes, and `reboot,rescueparty_warm_reboot_by_com.sec.android.sdhms`
 are absent from the next capture.
+
+## SDHMS fallback SIOP DEX enum fix
+
+The next test still reported `OverheatComplexType.DEX` after the
+`ssrm_default.xml` correction. The generated APK had the corrected SSRM asset,
+but it also installed `assets/siop_default.xml` from this patch. SDHMS parses
+that fallback policy during startup, and the target enum only defines
+`LTB`, `LCD`, `GDM`, `GDMLTB`, `SS`, and `EMR`; it does not define `DEX`.
+
+The unsupported `<DEX formula="SKIN" temp="470" />` entry was removed from
+`unica/patches/dvfs/assets/siop_default.xml`. The target-specific
+`siop_y2s_exynos990.xml` policy already contains compatible overheat types and
+remains unchanged. No build, installation, or device test was performed after
+this source correction; build a fresh image and confirm that the SDHMS handler
+no longer throws `No enum constant ...OverheatComplexType.DEX`.
+
+## Logcat capture reopened for app-launch failure
+
+On 2026-09-17 at 01:57:15 (-0300), the persistent `y2s-logcat` tmux session
+was recreated because the previous capture process was no longer running after
+the build cleanup. The phone was in recovery at recreation time, so the script
+is waiting for a normal ADB connection and will record a new
+`DEVICE_CONNECTED_<date>_<time>` section when Android boots. The current output
+file is:
+
+```text
+out/target/y2s/boot-diagnostics-20260917-015715/logcat.txt
+```
+
+The capture is detached and survives terminal/device disconnects. Attach with:
+
+```bash
+tmux attach -t y2s-logcat
+```
+
+## Logcat capture reopened after Chrome/WebView downgrade
+
+On 2026-09-17 at 03:17:27 (-0300), the persistent `y2s-logcat` session was
+recreated after the previous tmux server was unavailable. It is detached,
+survives terminal and device disconnects, and is waiting for the next ADB
+connection. The new output file is:
+
+```text
+out/target/y2s/boot-diagnostics-20260917-031727/logcat.txt
+```
+
+The phone's Chrome and WebView downgrade was reported to stop the AppZygote
+soft-reboot loop; preserve the next boot capture to verify that result.
+
+## Logcat capture reopened again
+
+On 2026-09-17 at 03:23:40 (-0300), `y2s-logcat` was recreated because the
+previous tmux server and capture process had exited. It is detached and
+waiting for the next ADB connection. The new capture file is:
+
+```text
+out/target/y2s/boot-diagnostics-20260917-032340/logcat.txt
+```
+
+## Logcat capture reopened again
+
+On 2026-09-17 at 12:19:59 (-0300), the `y2s-logcat` tmux session was
+recreated after the previous tmux server and capture process exited. It is
+detached and survives terminal and device disconnects. The phone connected at
+12:20:06 (-0300), and the new capture file is:
+
+```text
+out/target/y2s/boot-diagnostics-20260917-121959/logcat.txt
+```
+
+## SystemUI crash: media library ABI mismatch
+
+In the connection cycle captured in
+`out/target/y2s/boot-diagnostics-20260917-121959/logcat.txt`, `com.android.systemui`
+repeatedly crashes while creating the video wallpaper player:
+
+```text
+java.lang.UnsatisfiedLinkError: dlopen failed: cannot locate symbol
+_ZN7android10MppWrapper28renderAndReleaseOutputBufferEillRKNS_2spINS_8AMessageEEE
+referenced by /system/lib64/libmediasndk.so
+```
+
+The failure starts in `SemMediaPlayer`/`ImageWallpaper` and causes
+`Process com.android.systemui has crashed too many times`, leaving the device
+without SystemUI. The relevant log is around lines 390542-390650.
+
+The source is an ABI mismatch introduced by the Paradigm Audio eraser block:
+`unica/mods/paradigm/customize.sh` unconditionally imports the `pa2qxxx`
+`libmediasndk.so` and `libmediasndk.mediacore.samsung.so` at lines 111-112.
+The flashed `libmediasndk.so` hash is identical to that prebuilt. It requires
+the old `MppWrapper::renderAndReleaseOutputBuffer(...AMessage)` symbol, while
+the source S926B `libmppclient.so` in the image exports the newer signature
+with an additional boolean argument. The matching S926B media libraries exist
+under `out/fw/SM-S926B_EUX/system/system/lib64/`.
+
+No source fix has been applied yet. The safe correction is to use a coherent
+media-library set from the source firmware or disable this Audio eraser import;
+do not mix `pa2qxxx` media libraries with the S926B `libmppclient.so`.
+
+The failure was also confirmed live with the phone connected: the active
+wallpaper is `com.samsung.android.wallpaper.res/Default_Video_Wallpaper_ZVLB.mp4`,
+and `SystemUI` continues to crash/restart with the same linker error. The
+latest repeated crash is recorded around lines 700125-700169 of the capture.
+
+## Initial display density corrected for native resolution mapping
+
+On 2026-09-17, the connected SM-S926B donor port was running the FHD mode at
+1080x2400 with a logical density of 337 dpi. There was no persistent
+`display_density_forced` override; the value came from the native Android 16
+`DensityMapping` in `services.jar`. The generated vendor properties had
+`ro.sf.lcd_density=450` and `ro.sf.init.lcd_density=450`, and the native path
+scaled its static 450 dpi base by 1080/1440. The original G986B target's FHD
+behavior is 450 dpi, so the donor mapping made the UI oversized.
+
+Two source safeguards were added. `platform/exynos990/patches/miscs/customize.sh`
+now preserves an existing `ro.sf.init.lcd_density` (the donor and original
+target both define 600) and only falls back to `ro.sf.lcd_density` when that
+property is missing. `unica/patches/product_feature/customize.sh` also patches
+the native `LocalDisplayAdapter` path on Exynos990 ports to bypass the donor
+resolution density map while retaining native mode/HFR handling; the target's
+static density is consequently used in FHD. The temporary `wm density`
+override used during diagnosis was reset, and no build or flash was performed
+after these source changes; build and boot-test them next.
