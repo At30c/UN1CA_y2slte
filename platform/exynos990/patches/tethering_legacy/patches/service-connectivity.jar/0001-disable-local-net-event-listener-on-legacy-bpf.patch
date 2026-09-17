@@ -1,0 +1,33 @@
+From 4bbf5d5e53c72e6b7e4e6d98f37cf2b1bfb6a3a1 Mon Sep 17 00:00:00 2001
+From: UN1CA Maintainers <maintainers@unica.example>
+Date: Wed, 16 Sep 2026 22:00:00 -0300
+Subject: [PATCH] Disable local net event listener on legacy BPF kernels
+
+The Exynos 990 kernel is Linux 4.19 and does not provide the BPF ring buffer
+used by LocalNetEventListener. Returning null leaves the listener disabled;
+ConnectivityService already treats this dependency as optional.
+
+---
+ .../ConnectivityService$Dependencies.smali          | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/smali/android/net/connectivity/com/android/server/ConnectivityService$Dependencies.smali b/smali/android/net/connectivity/com/android/server/ConnectivityService$Dependencies.smali
+index 0000000..0000000 100644
+--- a/smali/android/net/connectivity/com/android/server/ConnectivityService$Dependencies.smali
++++ b/smali/android/net/connectivity/com/android/server/ConnectivityService$Dependencies.smali
+@@ -462,11 +462,10 @@
+ .method public getLocalNetEventListener(Landroid/content/pm/PackageManager;Landroid/app/AppOpsManager;Landroid/os/Looper;ZZ)Landroid/net/connectivity/com/android/server/connectivity/LocalNetEventListener;
+     .locals 0
+ 
+-    new-instance p0, Landroid/net/connectivity/com/android/server/connectivity/LocalNetEventListener;
++    const/4 p0, 0x0
+ 
+-    invoke-direct/range {p0 .. p5}, Landroid/net/connectivity/com/android/server/connectivity/LocalNetEventListener;-><init>(Landroid/content/pm/PackageManager;Landroid/app/AppOpsManager;Landroid/os/Looper;ZZ)V
++    return-object p0
+ 
+-    return-object p0
+ .end method
+ 
+ .method public getNetworkInterfaces()Ljava/util/Enumeration;
+-- 
+2.43.0
