@@ -96,6 +96,42 @@ sed -i -e 's|\.|\\.|g' -e 's|+|\\+|g' -e 's|\[|\\[|g' \
     -e 's|\]|\\]|g' -e 's|\*|\\*|g' "$PATCH_TMP/file_contexts"
 sed -i -e "s|$PATCH_TMP/mnt | |g" -e "s|$PATCH_TMP/mnt/||g" "$PATCH_TMP/fs_config"
 
+# The Android 16 connectivity service starts two optional native BPF event
+# consumers when their metrics flags are enabled.  Both ring buffers are
+# unavailable on the Exynos 990's Linux 4.19 kernel, and the native consumers
+# abort system_server when their maps are missing.  Disable both call sites in
+# the APEX jar before rebuilding the payload.
+SERVICE_CONNECTIVITY="$PAYLOAD/javalib/service-connectivity.jar"
+SERVICE_CONNECTIVITY_WORK="$WORK_DIR/system/system/framework/service-connectivity.jar"
+SERVICE_CONNECTIVITY_PATCH="$MODPATH/patches/service-connectivity.jar/0001-disable-local-net-event-listener-on-legacy-bpf.patch"
+SERVICE_CONNECTIVITY_LOOPBACK_PATCH="$MODPATH/patches/service-connectivity.jar/0002-disable-loopback-event-consumer-on-legacy-bpf.patch"
+
+if [ ! -f "$SERVICE_CONNECTIVITY" ]; then
+    LOGE "Tethering service-connectivity.jar not found in apex_payload"
+    return 1
+elif [ ! -f "$SERVICE_CONNECTIVITY_PATCH" ]; then
+    LOGE "Missing service-connectivity legacy-kernel patch"
+    return 1
+elif [ ! -f "$SERVICE_CONNECTIVITY_LOOPBACK_PATCH" ]; then
+    LOGE "Missing service-connectivity loopback legacy-kernel patch"
+    return 1
+fi
+
+LOG "- Decoding apex_payload/javalib/service-connectivity.jar"
+mkdir -p "$(dirname "$SERVICE_CONNECTIVITY_WORK")"
+mv -f "$SERVICE_CONNECTIVITY" "$SERVICE_CONNECTIVITY_WORK"
+DECODE_APK "system" "system/framework/service-connectivity.jar"
+
+LOG "- Disabling connectivity BPF event consumers on the legacy kernel"
+APPLY_PATCH "system" "system/framework/service-connectivity.jar" \
+    "$SERVICE_CONNECTIVITY_PATCH" || return 1
+APPLY_PATCH "system" "system/framework/service-connectivity.jar" \
+    "$SERVICE_CONNECTIVITY_LOOPBACK_PATCH" || return 1
+
+EVAL "\"$SRC_DIR/scripts/apktool.sh\" b \"system\" \"system/framework/service-connectivity.jar\"" || return 1
+mv -f "$SERVICE_CONNECTIVITY_WORK" "$SERVICE_CONNECTIVITY"
+rm -rf "$APKTOOL_DIR/system/framework/service-connectivity.jar"
+
 NETBPFLOAD="$PAYLOAD/bin/netbpfload"
 EXPECTED_SHA256="cad99f3ef16dfb940e2a29b0a5061d0c8d21063604ace33877023bc78a27ad13"
 PATCHED_SHA256="b4458f3107e66cff08e01de87586d2659578a4f16f09b13f846f047920eb0e61"
@@ -333,6 +369,8 @@ unset CAPEX PATCH_TMP DECODED PAYLOAD NETBPFLOAD EXPECTED_SHA256 PATCHED_SHA256 
     EXPECTED_85_SHA256 BROKEN_PATCHED_85_SHA256 \
     Q2_ONLY_PATCHED_85_SHA256 PATCHED_85_SHA256 EXPECTED_9_SHA256 \
     PATCHED_9_SHA256 ACTUAL_SHA256 FINAL_SHA256 \
+    SERVICE_CONNECTIVITY SERVICE_CONNECTIVITY_WORK SERVICE_CONNECTIVITY_PATCH \
+    SERVICE_CONNECTIVITY_LOOPBACK_PATCH \
     NETD_UPDATABLE EXPECTED_NETD_SHA256 PATCHED_NETD_SHA256 \
     EXPECTED_NETD_85_SHA256 BROKEN_PATCHED_NETD_85_SHA256 \
     PATCHED_NETD_85_SHA256 EXPECTED_NETD_9_SHA256 \

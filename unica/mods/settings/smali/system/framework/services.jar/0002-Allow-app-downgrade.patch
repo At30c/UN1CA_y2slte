@@ -4,13 +4,13 @@ Date: Fri, 24 Oct 2025 14:45:06 +0200
 Subject: [PATCH] Allow app downgrade
 
 ---
- .../server/pm/PackageManagerService.smali     | 18 ++++++++++++++++++
- 1 file changed, 18 insertions(+)
+ .../server/pm/PackageManagerService.smali     | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
 
 diff --git a/smali_classes2/com/android/server/pm/PackageManagerService.smali b/smali_classes2/com/android/server/pm/PackageManagerService.smali
 --- a/smali_classes2/com/android/server/pm/PackageManagerService.smali
 +++ b/smali_classes2/com/android/server/pm/PackageManagerService.smali
-@@ -22231,4 +22231,22 @@
+@@ -22231,4 +22231,24 @@
  
      if-nez v0, :cond_e
  
@@ -29,6 +29,8 @@ diff --git a/smali_classes2/com/android/server/pm/PackageManagerService.smali b/
 +    invoke-static/range {p0 .. p2}, Landroid/provider/Settings$System;->getInt(Landroid/content/ContentResolver;Ljava/lang/String;I)I
 +
 +    move-result v0
++
++    move-object/from16 p1, v5
 +
 +    if-nez v0, :cond_e
 +
