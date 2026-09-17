@@ -65,34 +65,6 @@ INIT_KERNEL_SUBMODULES()
     EVAL "git -C \"$KERNEL_TMP_DIR\" submodule update --init --recursive"
 }
 
-ENABLE_PERMISSIVE_SELINUX()
-{
-    local DEFCONFIG="$KERNEL_TMP_DIR/arch/arm64/configs/exynos9830_defconfig"
-
-    [ -f "$DEFCONFIG" ] || ABORT "Kernel defconfig not found: $DEFCONFIG"
-
-    # Samsung's production userspace switches SELinux to enforcing during
-    # early init. Keep the Exynos 990 port kernel permanently permissive so
-    # incomplete device policies cannot block legacy vendor services.
-    # Normalize every possible upstream state.  Do not rely on the option
-    # already being present as an unset comment in the donor defconfig.
-    sed -i \
-        -e '/^CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE=/d' \
-        -e '/^# CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE is not set$/d' \
-        -e '/^CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE=/d' \
-        -e '/^# CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE is not set$/d' \
-        "$DEFCONFIG"
-    {
-        echo '# CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE is not set'
-        echo 'CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE=y'
-    } >> "$DEFCONFIG"
-
-    grep -q '^CONFIG_SECURITY_SELINUX_DEVELOP=y$' "$DEFCONFIG" || \
-        ABORT "Kernel does not enable CONFIG_SECURITY_SELINUX_DEVELOP."
-    grep -q '^CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE=y$' "$DEFCONFIG" || \
-        ABORT "Could not enable permanently permissive SELinux in kernel."
-}
-
 SAFE_PULL_CHANGES()
 (
     # Keep errexit/pipefail local to this subshell. Leaking errexit caused a
@@ -144,7 +116,6 @@ REPLACE_KERNEL_BINARIES()
     fi
 
     INIT_KERNEL_SUBMODULES
-    ENABLE_PERMISSIVE_SELINUX
 
     KERNEL_CACHE_KEY="$(GET_KERNEL_CACHE_KEY)" || ABORT "Could not calculate the kernel cache key."
     KERNEL_COMMIT="$(git -C "$KERNEL_TMP_DIR" rev-parse --short=12 HEAD)" || ABORT "Could not determine the kernel commit."
