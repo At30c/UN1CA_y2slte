@@ -11,6 +11,8 @@ SET_PROP_IF_DIFF "vendor_dlkm" "persist.sys.usb.config" "$(GET_PROP "vendor_dlkm
 # https://android.googlesource.com/platform/packages/modules/adb/+/refs/tags/android-15.0.0_r1/daemon/main.cpp#213
 SET_PROP_IF_DIFF "system" "ro.adb.secure" "0"
 SET_PROP_IF_DIFF "vendor" "ro.adb.secure" "0"
+SET_PROP_IF_DIFF "system" "ro.debuggable" "1"
+SET_PROP_IF_DIFF "system" "persist.sys.disable_rescue" "true"
 
 # Enable klogd daemon
 # https://android.googlesource.com/platform/system/logging/+/refs/tags/android-16.0.0_r2/logd/main.cpp#214
