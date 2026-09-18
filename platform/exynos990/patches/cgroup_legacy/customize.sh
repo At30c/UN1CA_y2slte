@@ -42,4 +42,13 @@ do
 done
 
 LOG "  - cgroups.json, task_profiles.json and lib64/libcgrouprc.so aligned with One UI 8.5"
+
+ADD_TO_WORK_DIR "e2sxxx" "system" "system/lib64/libchrome.so" \
+    0 0 644 "u:object_r:system_lib_file:s0" || return 1
+if [ ! -f "$WORK_DIR/system/system/lib64/libchrome.so" ]; then
+    ABORT "One UI 8.5 libchrome.so was not added"
+    return 1
+fi
+
+LOG "  - lib64/libchrome.so aligned with the One UI 8.5 S24+ donor"
 LOG_STEP_OUT
