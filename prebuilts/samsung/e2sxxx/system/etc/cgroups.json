@@ -46,10 +46,7 @@
       },
       {
         "Controller": "memory",
-        "Path": ".",
-        "NeedsActivation": true,
-        "MaxActivationDepth": 0,
-        "Optional": true
+        "Path": "."
       }
     ]
   }

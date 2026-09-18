@@ -3,4 +3,4 @@ name=One UI 8.5 cgroup compatibility for Exynos 990
 version=1.0
 versionCode=1
 author=miguelbarretoo
-description=Aligns the Android 16+ cgroup userspace (cgroups.json, task_profiles.json, lib64/libcgrouprc.so) with the One UI 8.5 S24+ donor so zygote process specialization matches the Exynos 990 cgroup v2 kernel layout.
+description=Aligns the Android 16+ cgroup userspace (cgroups.json, task_profiles.json, lib64/libcgrouprc.so) with the One UI 8.5 S24+ donor so zygote process specialization matches the Exynos 990 cgroup v2 kernel layout, and enables the v2 memory controller at boot (cgroupmem.rc) so SystemMemoryProcess joins are satisfiable.

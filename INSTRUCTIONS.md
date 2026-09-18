@@ -580,3 +580,17 @@ Chrome/WebView cycles no longer SIGABRT their app-zygote children.
 
 Note: libchrome.so porting (commits e45eb9a8/aa7969ab) is unrelated to the
 crash path and was not part of the fix.
+
+Follow-up (same day, build flashed): the rc activation worked - the kernel
+memory controller now reports active on the root, apps and system subtrees,
+and fresh AppZygote spawns that previously aborted 100% of the time now mostly
+survive (0-1 aborts per 8-14 cold cycles, system_server no longer restarts).
+However `libprocessgroup` still logs "JoinCgroup ... memory ... will be
+ignored" even with the kernel controller enabled: it treats controllers marked
+`NeedsActivation` as inactive unless IT activated them during init, and Samsung
+init never performs that activation. The remaining abort ties to that ignored
+join. Fix: `cgroups.json`'s memory Cgroups2 entry no longer carries
+`NeedsActivation`/`MaxActivationDepth`/`Optional`, so the runtime considers the
+controller available and the profile join is applied instead of ignored. This
+rides with `cgroupmem.rc` (kernel-side enable). Validate after flash that the
+"will be ignored" line no longer appears and cold cycles are 0 aborts.
