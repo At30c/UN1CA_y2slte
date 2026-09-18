@@ -43,6 +43,15 @@ done
 
 LOG "  - cgroups.json, task_profiles.json and lib64/libcgrouprc.so aligned with One UI 8.5"
 
+ADD_TO_WORK_DIR "e2sxxx" "system" "system/etc/init/cgroupmem.rc" \
+    0 0 644 "u:object_r:system_file:s0" || return 1
+if [ ! -f "$WORK_DIR/system/system/etc/init/cgroupmem.rc" ]; then
+    ABORT "cgroupmem.rc was not added"
+    return 1
+fi
+
+LOG "  - /system/etc/init/cgroupmem.rc activando o memory controller no boot"
+
 ADD_TO_WORK_DIR "e2sxxx" "system" "system/lib64/libchrome.so" \
     0 0 644 "u:object_r:system_lib_file:s0" || return 1
 if [ ! -f "$WORK_DIR/system/system/lib64/libchrome.so" ]; then

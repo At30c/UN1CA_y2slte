@@ -1,0 +1,34 @@
+# Activate the cgroup v2 memory controller as early as possible during boot.
+#
+# The Exynos 990 kernel exposes the memory controller on the cgroup v2 root
+# but Samsung's init never enables it (cgroups.json marks it Optional), so
+# Android 16+ sandboxed zygote specialization (AppZygote SystemMemoryProcess
+# JoinCgroup "memory" verification) cannot place its children and aborts.
+# Enabling the controller here lets libcgrouprc satisfy the JoinCgroup.
+#
+# The writes are idempotent and harmless if the controller is already active
+# or the subtree does not exist yet; each trigger re-arms in case later boot
+# stages rebuild the tree before the knox/fs lock engages.
+
+on early-init
+    write /sys/fs/cgroup/cgroup.subtree_control +memory
+
+on init
+    write /sys/fs/cgroup/cgroup.subtree_control +memory
+    write /sys/fs/cgroup/apps/cgroup.subtree_control +memory
+    write /sys/fs/cgroup/system/cgroup.subtree_control +memory
+
+on post-fs-data
+    write /sys/fs/cgroup/cgroup.subtree_control +memory
+    write /sys/fs/cgroup/apps/cgroup.subtree_control +memory
+    write /sys/fs/cgroup/system/cgroup.subtree_control +memory
+
+on zygote-start
+    write /sys/fs/cgroup/cgroup.subtree_control +memory
+    write /sys/fs/cgroup/apps/cgroup.subtree_control +memory
+    write /sys/fs/cgroup/system/cgroup.subtree_control +memory
+
+on boot
+    write /sys/fs/cgroup/cgroup.subtree_control +memory
+    write /sys/fs/cgroup/apps/cgroup.subtree_control +memory
+    write /sys/fs/cgroup/system/cgroup.subtree_control +memory

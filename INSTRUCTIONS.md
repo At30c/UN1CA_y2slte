@@ -551,3 +551,32 @@ resolution density map while retaining native mode/HFR handling; the target's
 static density is consequently used in FHD. The temporary `wm density`
 override used during diagnosis was reset, and no build or flash was performed
 after these source changes; build and boot-test them next.
+
+## AppZygote SystemMemoryProcess crash: memory controller bake (2026-09-18)
+
+The Android 16+ donor's sandboxed zygote specialization on Exynos990 aborts
+its children (`F libc: Fatal signal 6, zygote-child`) when the
+`SystemMemoryProcess` profile applies `JoinCgroup memory system`: the Exynos990
+kernel exposes the cgroup v2 `memory` controller on the root
+(`/sys/fs/cgroup/cgroup.controllers` = memory) but Samsung's init never enables
+it, so the action is logged as "will be ignored" and the child aborts. Post-boot
+the cgroupfs is unreachable even for root+permissive (KSU `su` uid 0, no `avc:`
+denials; `+memory`/`mkdir` denied), so the controller can only be enabled at
+boot.
+
+The One UI 8.5 cgroup userspace swap (cgroups.json/task_profiles.json/
+libcgrouprc.so, commit 0e9b59db) does NOT prevent the abort once baked
+(verified on-device after flash; the earlier "module active => 20/20 clean" A/B
+was a lifecycle artifact, not a config effect). `cgroups.json` already carries
+`memory NeedsActivation:true`/`Optional:true` and it is never activated.
+
+The baked fix adds `prebuilts/samsung/e2sxxx/system/etc/init/cgroupmem.rc`
+(pushed into `/system/etc/init` by the cgroup_legacy module) which issues
+idempotent `write +memory` to the `cgroup.subtree_control` chain (root, apps,
+system) across the `early-init`, `init`, `post-fs-data`, `zygote-start` and
+`boot` triggers, before the fs lock engages. Validate after flash that
+`/sys/fs/cgroup/cgroup.subtree_control` reads `memory` and that cold-started
+Chrome/WebView cycles no longer SIGABRT their app-zygote children.
+
+Note: libchrome.so porting (commits e45eb9a8/aa7969ab) is unrelated to the
+crash path and was not part of the fix.
