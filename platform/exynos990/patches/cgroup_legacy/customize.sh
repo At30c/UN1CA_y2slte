@@ -51,4 +51,13 @@ if [ ! -f "$WORK_DIR/system/system/lib64/libchrome.so" ]; then
 fi
 
 LOG "  - lib64/libchrome.so aligned with the One UI 8.5 S24+ donor"
+
+ADD_TO_WORK_DIR "e2sxxx" "vendor" "lib64/libchrome.so" \
+    0 2000 644 "u:object_r:vendor_file:s0" || return 1
+if [ ! -f "$WORK_DIR/vendor/lib64/libchrome.so" ]; then
+    ABORT "One UI 8.5 vendor libchrome.so was not added"
+    return 1
+fi
+
+LOG "  - vendor/lib64/libchrome.so aligned with the One UI 8.5 S24+ donor"
 LOG_STEP_OUT
