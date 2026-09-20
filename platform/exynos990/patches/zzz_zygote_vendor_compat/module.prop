@@ -1,0 +1,6 @@
+id=zygote_vendor_compat
+name=Zygote vendor compatibility
+version=1.0
+versionCode=1
+author=Ats0c_
+description=Adapts the S24+ vendor zygote ABI and BoringSSL self-test selection for the 64-bit S20+ target without importing S24+ binaries.

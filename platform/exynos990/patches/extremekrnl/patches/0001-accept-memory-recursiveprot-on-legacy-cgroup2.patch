@@ -1,0 +1,160 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UN1CA maintainers <maintainers@unica.dev>
+Date: Sun, 20 Sep 2026 02:30:00 -0300
+Subject: [PATCH] cgroup: port recursive memory protection to legacy cgroup2
+
+Port the AOSP/Linux cgroup2 memory_recursiveprot feature to the 4.19
+ExtremeKRNL base. This keeps the Android mount option, exposes the feature
+through /sys/kernel/cgroup/features, and enables the recursive memory.min and
+memory.low protection semantics used by modern libprocessgroup.
+
+---
+
+diff --git a/include/linux/cgroup-defs.h b/include/linux/cgroup-defs.h
+index 57ce109f039e..eaab88bebdb9 100644
+--- a/include/linux/cgroup-defs.h
++++ b/include/linux/cgroup-defs.h
+@@ -89,6 +89,9 @@ enum {
+ 	 * Enable cpuset controller in v1 cgroup to use v2 behavior.
+ 	 */
+ 	CGRP_ROOT_CPUSET_V2_MODE = (1 << 4),
++
++	/* Enable recursive memory.min and memory.low protection. */
++	CGRP_ROOT_MEMORY_RECURSIVE_PROT = (1 << 5),
+ };
+ 
+ /* cftype->flags */
+diff --git a/kernel/cgroup/cgroup.c b/kernel/cgroup/cgroup.c
+index 705e5ce3db90..ac21a84594f3 100644
+--- a/kernel/cgroup/cgroup.c
++++ b/kernel/cgroup/cgroup.c
+@@ -1845,6 +1845,11 @@ static int parse_cgroup_root_flags(char *data, unsigned int *root_flags)
+ 			continue;
+ 		}
+ 
++		if (!strcmp(token, "memory_recursiveprot")) {
++			*root_flags |= CGRP_ROOT_MEMORY_RECURSIVE_PROT;
++			continue;
++		}
++
+ 		pr_err("cgroup2: unknown option \"%s\"\n", token);
+ 		return -EINVAL;
+ 	}
+@@ -1859,6 +1864,11 @@ static void apply_cgroup_root_flags(unsigned int root_flags)
+ 			cgrp_dfl_root.flags |= CGRP_ROOT_NS_DELEGATE;
+ 		else
+ 			cgrp_dfl_root.flags &= ~CGRP_ROOT_NS_DELEGATE;
++
++		if (root_flags & CGRP_ROOT_MEMORY_RECURSIVE_PROT)
++			cgrp_dfl_root.flags |= CGRP_ROOT_MEMORY_RECURSIVE_PROT;
++		else
++			cgrp_dfl_root.flags &= ~CGRP_ROOT_MEMORY_RECURSIVE_PROT;
+ 	}
+ }
+ 
+@@ -1866,6 +1876,8 @@ static int cgroup_show_options(struct seq_file *seq, struct kernfs_root *kf_root
+ {
+ 	if (cgrp_dfl_root.flags & CGRP_ROOT_NS_DELEGATE)
+ 		seq_puts(seq, ",nsdelegate");
++	if (cgrp_dfl_root.flags & CGRP_ROOT_MEMORY_RECURSIVE_PROT)
++		seq_puts(seq, ",memory_recursiveprot");
+ 	return 0;
+ }
+ 
+@@ -6517,7 +6529,9 @@ static struct kobj_attribute cgroup_delegate_attr = __ATTR_RO(delegate);
+ static ssize_t features_show(struct kobject *kobj, struct kobj_attribute *attr,
+ 			     char *buf)
+ {
+-	return snprintf(buf, PAGE_SIZE, "nsdelegate\n");
++	return snprintf(buf, PAGE_SIZE,
++			"nsdelegate\n"
++			"memory_recursiveprot\n");
+ }
+ static struct kobj_attribute cgroup_features_attr = __ATTR_RO(features);
+ 
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index f36d078b0997..3af6709f8aa1 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -457,6 +457,27 @@ static int memcg_alloc_shrinker_maps(struct mem_cgroup *memcg)
+ static void memcg_free_shrinker_maps(struct mem_cgroup *memcg) { }
+ #endif /* CONFIG_MEMCG_KMEM */
+ 
++static unsigned long effective_protection(unsigned long usage,
++		unsigned long parent_usage, unsigned long setting,
++		unsigned long parent_effective, unsigned long siblings_protected)
++{
++	unsigned long protected = min(usage, setting);
++	unsigned long effective = protected;
++
++	if (!(cgrp_dfl_root.flags & CGRP_ROOT_MEMORY_RECURSIVE_PROT))
++		return effective;
++
++	if (parent_effective > siblings_protected && usage > protected) {
++		unsigned long unclaimed = parent_effective - siblings_protected;
++
++		unclaimed *= usage - protected;
++		unclaimed /= parent_usage - siblings_protected;
++		effective += unclaimed;
++	}
++
++	return effective;
++}
++
+ /**
+  * mem_cgroup_css_from_page - css of the memcg associated with a page
+  * @page: page of interest
+@@ -5967,9 +5988,8 @@ enum mem_cgroup_protection mem_cgroup_protected(struct mem_cgroup *root,
+ 						struct mem_cgroup *memcg)
+ {
+ 	struct mem_cgroup *parent;
+-	unsigned long emin, parent_emin;
+-	unsigned long elow, parent_elow;
+-	unsigned long usage;
++	unsigned long emin, elow;
++	unsigned long usage, parent_usage;
+ 
+ 	if (mem_cgroup_disabled())
+ 		return MEMCG_PROT_NONE;
+@@ -5994,33 +6014,13 @@ enum mem_cgroup_protection mem_cgroup_protected(struct mem_cgroup *root,
+ 	if (parent == root)
+ 		goto exit;
+ 
+-	parent_emin = READ_ONCE(parent->memory.emin);
+-	emin = min(emin, parent_emin);
+-	if (emin && parent_emin) {
+-		unsigned long min_usage, siblings_min_usage;
+-
+-		min_usage = min(usage, memcg->memory.min);
+-		siblings_min_usage = atomic_long_read(
+-			&parent->memory.children_min_usage);
+-
+-		if (min_usage && siblings_min_usage)
+-			emin = min(emin, parent_emin * min_usage /
+-				   siblings_min_usage);
+-	}
+-
+-	parent_elow = READ_ONCE(parent->memory.elow);
+-	elow = min(elow, parent_elow);
+-	if (elow && parent_elow) {
+-		unsigned long low_usage, siblings_low_usage;
+-
+-		low_usage = min(usage, memcg->memory.low);
+-		siblings_low_usage = atomic_long_read(
+-			&parent->memory.children_low_usage);
+-
+-		if (low_usage && siblings_low_usage)
+-			elow = min(elow, parent_elow * low_usage /
+-				   siblings_low_usage);
+-	}
++	parent_usage = page_counter_read(&parent->memory);
++	emin = effective_protection(usage, parent_usage, memcg->memory.min,
++			READ_ONCE(parent->memory.emin), atomic_long_read(
++			&parent->memory.children_min_usage));
++	elow = effective_protection(usage, parent_usage, memcg->memory.low,
++			READ_ONCE(parent->memory.elow), atomic_long_read(
++			&parent->memory.children_low_usage));
+ 
+ exit:
+ 	memcg->memory.emin = emin;
+

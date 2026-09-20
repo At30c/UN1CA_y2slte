@@ -1,0 +1,16 @@
+# Select the vendor BoringSSL self-test trigger from the active zygote ABI,
+# matching the S24+ vendor layout. The service binaries remain the S20+
+# Exynos 990 versions already present in /vendor/bin.
+import /vendor/etc/boringssl_self_test.${ro.zygote}.rc
+
+service boringssl_self_test32_vendor /vendor/bin/boringssl_self_test32
+    setenv BORINGSSL_SELF_TEST_CREATE_FLAG true
+    reboot_on_failure reboot,boringssl-self-check-failed
+    stdio_to_kmsg
+    user root
+
+service boringssl_self_test64_vendor /vendor/bin/boringssl_self_test64
+    setenv BORINGSSL_SELF_TEST_CREATE_FLAG true
+    reboot_on_failure reboot,boringssl-self-check-failed
+    stdio_to_kmsg
+    user root

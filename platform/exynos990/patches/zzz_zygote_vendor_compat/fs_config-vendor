@@ -1,0 +1,2 @@
+vendor/etc/boringssl_self_test.zygote64.rc 0 0 644 capabilities=0x0
+vendor/etc/init/boringssl_self_test.rc 0 0 644 capabilities=0x0

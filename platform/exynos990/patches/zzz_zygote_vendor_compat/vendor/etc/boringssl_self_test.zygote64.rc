@@ -1,0 +1,4 @@
+# The S20+ image is arm64-only, so only the 64-bit vendor self-test is
+# scheduled when ro.zygote=zygote64.
+on early-init && property:ro.product.cpu.abilist64=*
+    exec_start boringssl_self_test64_vendor

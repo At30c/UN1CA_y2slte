@@ -1,0 +1,7 @@
+# The S24+ donor is zygote64-only. Keep the S20+ vendor ABI contract aligned
+# with the Android 17 system image while retaining the Exynos 990 binaries.
+ro.zygote=zygote64
+dalvik.vm.dex2oat64.enabled=true
+ro.vendor.product.cpu.abilist=arm64-v8a
+ro.vendor.product.cpu.abilist32=
+ro.vendor.product.cpu.abilist64=arm64-v8a

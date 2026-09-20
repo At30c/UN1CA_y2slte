@@ -10,6 +10,23 @@
 # or the subtree does not exist yet; each trigger re-arms in case later boot
 # stages rebuild the tree before the knox/fs lock engages.
 
+# The legacy vendor init creates these groups under early-fs, but framework
+# task profiles can run earlier during boot. Create the groups at early-init
+# as well so the first services do not race their creation.
+on early-init
+    mkdir /dev/blkio/top
+    mkdir /dev/blkio/high
+    mkdir /dev/blkio/normal
+    mkdir /dev/blkio/low
+    chown system system /dev/blkio/top/cgroup.procs
+    chown system system /dev/blkio/high/cgroup.procs
+    chown system system /dev/blkio/normal/cgroup.procs
+    chown system system /dev/blkio/low/cgroup.procs
+    chmod 0664 /dev/blkio/top/cgroup.procs
+    chmod 0664 /dev/blkio/high/cgroup.procs
+    chmod 0664 /dev/blkio/normal/cgroup.procs
+    chmod 0664 /dev/blkio/low/cgroup.procs
+
 on early-init
     write /sys/fs/cgroup/cgroup.subtree_control +memory
 

@@ -65,6 +65,27 @@ INIT_KERNEL_SUBMODULES()
     EVAL "git -C \"$KERNEL_TMP_DIR\" submodule update --init --recursive"
 }
 
+APPLY_KERNEL_PATCHES()
+{
+    local PATCH_DIR="$SRC_DIR/platform/exynos990/patches/extremekrnl/patches"
+    local PATCH="$PATCH_DIR/0001-accept-memory-recursiveprot-on-legacy-cgroup2.patch"
+
+    if [ ! -f "$PATCH" ]; then
+        ABORT "Kernel compatibility patch not found: ${PATCH//$SRC_DIR\//}"
+        return 1
+    fi
+
+    if git -C "$KERNEL_TMP_DIR" apply --check "$PATCH" > /dev/null 2>&1; then
+        LOG "- Applying cgroup2 compatibility patch"
+        EVAL "git -C \"$KERNEL_TMP_DIR\" apply \"$PATCH\""
+    elif git -C "$KERNEL_TMP_DIR" apply --reverse --check "$PATCH" > /dev/null 2>&1; then
+        LOG "- cgroup2 compatibility patch is already applied"
+    else
+        ABORT "Could not apply cgroup2 compatibility patch to the ExtremeKRNL source."
+        return 1
+    fi
+}
+
 SAFE_PULL_CHANGES()
 (
     # Keep errexit/pipefail local to this subshell. Leaking errexit caused a
@@ -116,6 +137,7 @@ REPLACE_KERNEL_BINARIES()
     fi
 
     INIT_KERNEL_SUBMODULES
+    APPLY_KERNEL_PATCHES
 
     KERNEL_CACHE_KEY="$(GET_KERNEL_CACHE_KEY)" || ABORT "Could not calculate the kernel cache key."
     KERNEL_COMMIT="$(git -C "$KERNEL_TMP_DIR" rev-parse --short=12 HEAD)" || ABORT "Could not determine the kernel commit."

@@ -1,0 +1,2 @@
+/vendor/etc/boringssl_self_test\.zygote64\.rc u:object_r:vendor_configs_file:s0
+/vendor/etc/init/boringssl_self_test\.rc u:object_r:vendor_configs_file:s0

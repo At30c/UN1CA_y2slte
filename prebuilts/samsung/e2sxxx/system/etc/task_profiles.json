@@ -23,7 +23,7 @@
     {
       "Name": "ForegroundBoostCapacityCPUs",
       "Controller": "cpuset",
-      "File": "foreground-boost/cpus"
+      "File": "foreground/cpus"
     },
     {
       "Name": "MemStats",
@@ -528,7 +528,7 @@
           "Params":
           {
             "Controller": "cpuset",
-            "Path": "foreground-boost"
+            "Path": "foreground"
           }
         }
       ]
