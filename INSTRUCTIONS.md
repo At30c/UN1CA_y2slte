@@ -6,9 +6,20 @@ This document records the investigation and changes made after the request to in
 
 - Repository: `/home/ats0c/UN1CA-y2slte`
 - Active branch during this investigation: `seventeen`
-- No full ROM build was started as part of this investigation.
+- An incremental ROM build for the cgroup A/B test completed the work-dir
+  generation at 19:16. The flashable build was subsequently generated and
+  installed on the connected SM-S926B for on-device A/B validation.
 - The fixes described below were prepared on `seventeen`; check the branch history for their final commit identifiers.
 - Do not discard unrelated local modifications. The working tree already contains other ongoing work.
+
+## Atualização da branch
+
+Em 2026-09-19, a branch local `seventeen` foi atualizada por fast-forward de
+`3faf492f` para `c4607c8a` (`cgroup: revamp One UI 8.5 compatibility patch`),
+incorporando os sete commits mais recentes de `origin/seventeen`. As alterações
+locais rastreadas e os arquivos não rastreados foram preservados; o conflito
+documental em `INSTRUCTIONS.md` foi combinado mantendo os registros locais e
+as novas notas do upstream. Nenhum build ou flash foi executado.
 
 ## Persistent logcat capture
 
@@ -240,6 +251,39 @@ Validation performed:
 The next required step is a fresh build and boot test so the corrected
 `services.jar` replaces the currently installed bytecode.
 
+## ExtremeKRNL cgroup v2 compatibility
+
+The `y2s` boot log showed the Android userspace requesting the cgroup v2 mount
+option `memory_recursiveprot`, which is not implemented by the ExtremeKRNL
+4.19 cgroup parser. The kernel rejected that option and Android retried the
+mount without it. This was non-fatal, but generated an avoidable init error
+and exposed a userspace/kernel capability mismatch.
+
+The ExtremeKRNL integration now applies:
+
+```text
+platform/exynos990/patches/extremekrnl/patches/0001-accept-memory-recursiveprot-on-legacy-cgroup2.patch
+```
+
+The patch makes the legacy parser accept `memory_recursiveprot` as a no-op.
+This preserves the exact behavior of Android's existing retry path while
+allowing the initial cgroup v2 mount to complete without the error. The
+`customize.sh` integration is idempotent and includes the patched kernel
+working tree in the existing cache key, so a stale kernel image is rebuilt.
+
+Validation performed:
+
+1. `git apply --check` succeeds against the current ExtremeKRNL source.
+2. `bash -n platform/exynos990/patches/extremekrnl/customize.sh` succeeds.
+3. `git diff --check` succeeds for the integration changes.
+4. The patched `kernel/cgroup/cgroup.o` compiled successfully with the
+   current ExtremeKRNL configuration.
+
+No full kernel or ROM build was run in this step. Build and boot validation
+remain required; the expected result is that `cgroup2: unknown option
+"memory_recursiveprot"` and `Mounting memcg with memory_recursiveprot failed`
+no longer appear in the new boot log.
+
 ## Verifier fixes for the downgrade and HMA patches
 
 On 2026-09-16, the two verifier failures found in the boot diagnostics were
@@ -401,6 +445,65 @@ Attach with:
 tmux attach -t y2s-logcat
 ```
 
+## A/B test do abort do zygote (2026-09-19)
+
+O aparelho foi conectado por USB para um teste controlado. Ao abrir o Chrome,
+o log mostrou a sequência: criação do cgroup do filho, aviso de que
+`SystemMemoryProcess`/`JoinCgroup memory` seria ignorado e `SIGABRT` no
+`zygote-child`; o spam `ZygoteProcess: Connection refused` começou logo
+depois. Os controllers `memory` estavam ativos no root, `apps` e `system`.
+O teste inicial levantou a hipótese de que o abort vinha exclusivamente do
+perfil, mas o A/B instalado abaixo mostrou que essa hipótese é incompleta.
+
+Para isolar essa causa, o perfil `SystemMemoryProcess` em
+`prebuilts/samsung/e2sxxx/system/etc/task_profiles.json` foi temporariamente
+mantido sem ações (`"Actions": []`). Isso é apenas um A/B diagnóstico: não é
+a correção definitiva porque remove a movimentação desse processo para o
+cgroup `system`. O JSON foi validado localmente. Um build incremental foi
+iniciado com `source buildenv.sh y2s && ./scripts/make_rom.sh -c
+--no-rom-zip` e concluiu a geração do `work_dir` às 19:16. A build flashável
+foi então gerada pelo usuário e instalada no SM-S926B; a validação ocorreu no
+fingerprint `samsung/e2sxxx/e2s:17/CP2A.260605.016/S926BXXUHZZHL`.
+
+Resultado do A/B instalado: o perfil sem ações eliminou o aviso
+`JoinCgroup ... memory ... will be ignored`, mas **não eliminou** o
+`zygote-child SIGABRT`: ainda ocorreram aborts às 20:03:37 (PID 18836) e
+20:04:43 (PID 19300). Nesses eventos o cgroup do filho foi criado
+normalmente; logo, a causa não é somente o `JoinCgroup` do
+`SystemMemoryProcess`. O `crash_dump64` também não conseguiu abrir `/proc` do
+filho antes de ele desaparecer, portanto ainda falta um tombstone utilizável
+para identificar a chamada que dispara o abort.
+
+O spam `ZygoteProcess: Got error connecting to zygote, retrying. msg=
+Connection refused` continua em ritmo alto (mais de 52 mil linhas entre
+20:03 e 20:09), mesmo com `zygote`/`zygote_next` em execução e os sockets
+correspondentes escutando. Ele é um problema separado, ainda não corrigido;
+a propriedade `ro.vendor.redirect_socket_calls=true` e o caminho de conexão
+do `system_server` precisam ser investigados.
+
+O log também fechou a causa do soft-reboot: às 20:05:13 o `Watchdog` matou o
+`system_server` porque ele ficou 71 s bloqueado em
+`ActivityManager:procStart`, dentro de
+`ZygoteProcess.waitForConnectionToZygote()` ->
+`AppZygote.connectToZygoteIfNeededLocked()`. Em seguida o zygote registrou
+`Zygote failed to write to system_server FD: Connection refused` e saiu; o
+`init` reiniciou o zygote e o `system_server` (novo PID 19820 às 20:05:15).
+Assim, o spam não é apenas cosmético: ele trava o start de processos e causa
+o soft-reboot. O socket recusado é o AppZygote do Chrome (`uid 10248`), que
+está abortando antes de ficar disponível.
+
+Teste de controle após o reinício do `system_server`: `adb shell am start -W
+-a android.settings.SETTINGS` abriu `SettingsHomepageActivity` em 864 ms,
+com `system_server` (PID 19820) e zygote ativos e sem novo abort/refusal no
+intervalo observado. Isso restringe a falha ao caminho de AppZygote usado pelo
+Chrome/sandbox, e não a toda criação de processos normais.
+
+Também permanece um crash independente do Chrome: `SIGTRAP` em
+`libchrome.so`, com `Timed out waiting for GPU channel`, sem relação direta
+com o abort do zygote. O perfil sem ações continua sendo apenas um A/B
+diagnóstico e não deve ser tratado como correção final, pois remove a
+colocação de `SystemMemoryProcess` no cgroup `system`.
+
 ## SDHMS RescueParty soft-reboot fix
 
 The cycle beginning at `DEVICE_CONNECTED_2026-09-16_23:36:31-0300` was not a
@@ -542,15 +645,16 @@ On 2026-09-17, the connected SM-S926B donor port was running the FHD mode at
 scaled its static 450 dpi base by 1080/1440. The original G986B target's FHD
 behavior is 450 dpi, so the donor mapping made the UI oversized.
 
-Two source safeguards were added. `platform/exynos990/patches/miscs/customize.sh`
-now preserves an existing `ro.sf.init.lcd_density` (the donor and original
-target both define 600) and only falls back to `ro.sf.lcd_density` when that
-property is missing. `unica/patches/product_feature/customize.sh` also patches
-the native `LocalDisplayAdapter` path on Exynos990 ports to bypass the donor
-resolution density map while retaining native mode/HFR handling; the target's
-static density is consequently used in FHD. The temporary `wm density`
-override used during diagnosis was reset, and no build or flash was performed
-after these source changes; build and boot-test them next.
+The temporary `wm density` override used during diagnosis was reset. The
+temporary `SMALI_PATCH` added to
+`unica/patches/product_feature/customize.sh` to bypass the native density map
+was reverted on request; no build or flash was performed after the change.
+
+## Reversão do ajuste de DPI
+
+Em 2026-09-17, removi o bloco `SMALI_PATCH` de
+`unica/patches/product_feature/customize.sh`, conforme solicitado. Nenhum build
+ou flash foi executado após a reversão.
 
 ## AppZygote SystemMemoryProcess crash: memory controller bake (2026-09-18)
 
@@ -594,3 +698,400 @@ join. Fix: `cgroups.json`'s memory Cgroups2 entry no longer carries
 controller available and the profile join is applied instead of ignored. This
 rides with `cgroupmem.rc` (kernel-side enable). Validate after flash that the
 "will be ignored" line no longer appears and cold cycles are 0 aborts.
+
+## Logcat capture prepared again
+
+On 2026-09-19 at 18:51:56 (-0300), the detached persistent `y2s-logcat` tmux
+session was recreated with `scripts/capture_logcat_tmux.sh`. The phone was not
+connected at startup, so the capture is waiting for ADB and will create a new
+`DEVICE_CONNECTED_<date>_<time>` marker automatically when the device becomes
+available. The current output file is:
+
+```text
+out/target/y2s/boot-diagnostics-20260919-185156/logcat.txt
+```
+
+Attach with:
+
+```bash
+tmux attach -t y2s-logcat
+```
+
+## ART/APEX comparison and revised AppZygote diagnosis (2026-09-19)
+
+The ART comparison was completed between the decompressed S926B source,
+the original G986B target, and the r11s donor:
+
+```text
+S926B source:  com.google.android.art_compressed.apex, versionCode 371000140, SDK 37, lib64 only
+r11s donor:    com.google.android.art_compressed.apex, versionCode 361154460, SDK 36, lib + lib64
+G986B target:  com.google.android.art_compressed.apex, versionCode 331711080, SDK 33, lib + lib64
+```
+
+The inner APEX manifest identifies all three packages as `com.android.art`.
+The r11s package is therefore an older Android 16 ART, while the S926B source
+framework is Android 17. Replacing the complete S926B ART with r11s would mix
+the Android 16 64-bit ART libraries and Java runtime with the Android 17
+framework and is not a safe compatibility fix. The r11s package should not be
+enabled wholesale merely to provide ARM32 files.
+
+The repository contains a separate module,
+`platform/exynos990/patches/zzz_runtime32_compat`, whose
+`customize.sh` would copy the complete r11s ART APEX. That module is disabled
+by its `disable` marker. The active
+`platform/exynos990/patches/__desixtification/customize.sh` imports r11s
+system libraries and merges Runtime/I18n content, but it does not replace the
+ART APEX. The current work-dir ART APEX has the same SHA-256 as the S926B
+source APEX, confirming that the observed 2026-09-19 boot was not running the
+r11s ART.
+
+This supersedes the earlier hypothesis that the current `zygote-child`
+`SIGABRT` was caused solely by the `SystemMemoryProcess` memory join or by an
+r11s ART replacement. The A/B test with the profile actions removed still
+reproduced the abort. In the latest capture, the child successfully creates
+`/sys/fs/cgroup/apps/uid_10248/pid_28075`, receives the cgroup-v2 memory join
+warning, and aborts approximately 5 ms later:
+
+```text
+out/target/y2s/boot-diagnostics-20260919-185156/logcat.txt:349717
+out/target/y2s/boot-diagnostics-20260919-185156/logcat.txt:349721
+out/target/y2s/boot-diagnostics-20260919-185156/logcat.txt:349723
+```
+
+The subsequent `ZygoteProcess: Connection refused` messages are the
+system-server retry loop after the native AppZygote child/service failure;
+they are not proof that the regular Java `zygote64` process was the original
+fault. The native specialization path still needs to be isolated among
+cpuset/task-profile application, seccomp/`NO_NEW_PRIVS`, SELinux context
+transition, and capability setup. Audit queue overflow occurs at the same
+time, so a native-AppZygote AVC may be missing from the captured log.
+
+The confirmed independent configuration mismatch remains the imported
+`SystemServiceCapacityHigh` profile requiring
+`/dev/cpuset/foreground-boost`, while the target vendor init does not create
+that group. Fix and test that mismatch separately, then compare the child
+abort count, the `zygote_next` state, and the connection-refused rate. Do not
+activate `zzz_runtime32_compat` as an ART fix without first designing an
+ARM32-only merge that preserves the S926B ART 64-bit payload.
+
+## Cadeia do Chrome Native AppZygote e causa provável do SIGABRT (2026-09-19)
+
+Uma investigação adicional do APK, do `services.jar` e do logcat confirmou a
+cadeia de inicialização usada pelo Chrome. O Chrome principal é iniciado pelo
+zygote regular e funciona inicialmente (PID 28010):
+
+```text
+out/target/y2s/boot-diagnostics-20260919-185156/logcat.txt:347603
+out/target/y2s/boot-diagnostics-20260919-185156/logcat.txt:347767
+```
+
+O manifesto do Chrome declara `NativeOnlySandboxedProcessService0` como
+`nativeService=true`, `isolatedProcess=true` e `useAppZygote=true`. Por isso,
+o serviço passa pela seguinte cadeia:
+
+```text
+Chrome
+  -> services.jar / ProcessList
+  -> AppZygote
+  -> NativeZygoteProcess
+  -> zygote_next
+  -> zygote-child
+```
+
+As implementações desmontadas confirmam essa rota em
+`ProcessList.smali`, `ActiveServices.smali` e `NativeZygoteProcess.smali`; não
+foi encontrada uma seleção incorreta do zygote pelo `services.jar`:
+
+```text
+out/target/y2s/apktool/system/framework/services.jar/smali/com/android/server/am/ProcessList.smali:14487
+out/target/y2s/apktool/system/framework/services.jar/smali/com/android/server/am/ActiveServices.smali:6449
+out/target/y2s/apktool/system/framework/framework.jar/smali_classes3/android/os/NativeZygoteProcess.smali:312
+```
+
+No boot analisado, `zygote_next` inicia, cria o cgroup do processo nativo e o
+filho aborta quase imediatamente:
+
+```text
+out/target/y2s/boot-diagnostics-20260919-185156/logcat.txt:349686
+out/target/y2s/boot-diagnostics-20260919-185156/logcat.txt:349717
+out/target/y2s/boot-diagnostics-20260919-185156/logcat.txt:349723
+```
+
+O spam abaixo é consequência da morte do AppZygote: o `system_server` tenta
+reconectar ao socket privado que deixou de existir e agenda nova tentativa do
+`NativeOnlySandboxedProcessService0`. Não é evidência de que o `zygote64`
+regular tenha morrido primeiro:
+
+```text
+out/target/y2s/boot-diagnostics-20260919-185156/logcat.txt:7588824
+```
+
+Sem o processo nativo, o Chrome principal não recebe o canal GPU e aborta
+depois com `Timed out waiting for GPU channel`. Esse crash é um efeito
+posterior da falha do sandbox nativo, não uma prova de que o driver GPU seja a
+causa inicial:
+
+```text
+out/target/y2s/boot-diagnostics-20260919-185156/logcat.txt:390960
+out/target/y2s/boot-diagnostics-20260919-185156/logcat.txt:390966
+```
+
+O APK em `/product/app/Chrome64` também não é o binário efetivamente usado.
+Ele é ignorado porque o Chrome atualizado em `/data/app` tem versão
+`801004904`, superior à versão `782710233` da partição `product`:
+
+```text
+out/target/y2s/boot-diagnostics-20260919-185156/logcat.txt:19238
+```
+
+O backtrace do crash aponta para `libchrome.so` dentro do APK atualizado em
+`/data/app`. Portanto, alterar somente o APK Chrome da `product` não controla
+o código nativo que falha durante esse boot.
+
+O teste A/B também mostrou que remover as ações de `SystemMemoryProcess`
+silencia o aviso de `JoinCgroup`, mas não elimina o `SIGABRT`: os PIDs 18836 e
+19300 continuam abortando mesmo sem o aviso. A causa ainda precisa ser
+isolada entre aplicação de task profile/cpuset, capability setup,
+seccomp/`NO_NEW_PRIVS`, transição SELinux e bibliotecas nativas. O logcat não
+contém o tombstone interno do `zygote-child`, e houve overflow da fila de
+auditoria, portanto uma AVC específica pode ter sido perdida.
+
+Os problemas de cgroup permanecem como incompatibilidades independentes:
+
+```text
+out/target/y2s/boot-diagnostics-20260919-185156/logcat.txt:8324
+out/target/y2s/boot-diagnostics-20260919-185156/logcat.txt:9256
+```
+
+O runtime ainda rejeita `memory_recursiveprot`, apesar de o patch existir no
+código-fonte do kernel, e o perfil `SystemServiceCapacityHigh` requer o grupo
+`/dev/cpuset/foreground-boost`, que não é criado pela inicialização do alvo.
+É necessário validar o hash da imagem `boot.img` realmente flashada e capturar
+o tombstone nativo para confirmar qual dessas incompatibilidades participa do
+abort.
+
+Próximos testes controlados:
+
+1. Desabilitar/remover temporariamente o Chrome atualizado e testar a versão
+   compatível da `product`, mantendo o restante da imagem inalterado.
+2. Após um novo abort, preservar imediatamente o tombstone do
+   `zygote-child`, além do logcat, para obter a mensagem de abort e o contexto
+   nativo.
+3. Comparar o hash do `boot.img` flashado com o artefato de kernel que contém
+   o patch `memory_recursiveprot`.
+4. Corrigir/testar separadamente o perfil `foreground-boost` e comparar a
+   contagem de aborts, o estado de `zygote_next` e a frequência de
+   `Connection refused`.
+
+Não desviar permanentemente o serviço nativo para o zygote regular nem
+desabilitar o sandbox do Chrome: isso reduziria a segurança. Nenhuma alteração
+de código foi feita durante esta investigação; esta seção apenas documenta
+os resultados e os testes recomendados.
+
+## Adaptação das configurações vendor do zygote do S24+ (2026-09-19)
+
+Foi feita uma comparação completa das referências a `zygote`, `app_zygote`,
+`zygote_next`, serviços nativos, propriedades, `task_profiles` e SELinux entre
+`out/fw/SM-S926B_EUX/vendor` e o vendor Exynos 990 usado pelo S20+.
+
+O S24+ não possui `zygote_next` na partição `vendor`: não há arquivo `.rc`,
+propriedade ou serviço vendor contendo `zygote_next`/`android-native-app`. O
+serviço é iniciado exclusivamente pelo system em
+`system/etc/init/zygote_next.rc`, através do binário
+`/system/bin/zygote_next`. Portanto, nenhum serviço `zygote_next` foi copiado
+para o vendor do S20+.
+
+As configurações vendor relevantes encontradas no S24+ foram:
+
+1. `ro.zygote=zygote64` e listas ABI somente arm64, que já eram aplicadas pelo
+   módulo de desixtification e agora também ficam explícitas no novo módulo.
+2. O seletor BoringSSL vendor que importa
+   `boringssl_self_test.${ro.zygote}.rc`. O alvo possuía apenas os gatilhos
+   genéricos no `boringssl_self_test.rc`; ele agora usa o mesmo seletor do
+   S24+ e recebe `boringssl_self_test.zygote64.rc`, executando somente o
+   self-test de 64 bits.
+3. Os serviços `boringssl_self_test32_vendor` e
+   `boringssl_self_test64_vendor` passaram a declarar explicitamente `user
+   root`, como no donor. Os binários continuam sendo os do S20+/Exynos 990;
+   nenhum executável do S24+ foi importado.
+
+A adaptação foi isolada em:
+
+```text
+platform/exynos990/patches/zzz_zygote_vendor_compat/
+```
+
+O módulo também registra `file_context-vendor` e `fs_config-vendor` para que
+os dois arquivos `.rc` recebam `vendor_configs_file` e permissões 0644. As
+variantes vendor `zygote32`, `zygote64_32` e `no_zygote` do S24+ não foram
+copiadas porque o alvo foi configurado como arm64-only (`ro.zygote=zygote64`;
+`ro.vendor.product.cpu.abilist32` vazio).
+
+A política SELinux do S24+ não foi substituída: as regras `app_zygote` e
+`zygote` já existem no vendor alvo com os tipos API 30, e copiar os CIL do S24+
+(API 34/SoC diferente) seria incompatível e inseguro. Da mesma forma, o
+`task_profiles.json` vendor do S24+ contém perfis EMS específicos do hardware
+S5E9945, portanto não foi importado como se fosse configuração de zygote.
+
+Validação estática realizada:
+
+- `ro.zygote` e a ABI final permanecem `zygote64`/arm64-only;
+- o vendor não contém referência a `zygote_next` antes nem depois da
+  adaptação;
+- o novo import BoringSSL aponta para o arquivo `zygote64` correto;
+- não foram copiados binários, bibliotecas ou políticas SELinux do S24+.
+
+É necessário gerar e instalar uma nova build para validar no aparelho. O teste
+deve verificar se o self-test vendor executa sem erro e, separadamente, se o
+Chrome atualizado ainda causa o abort do AppZygote; esta alteração não desvia
+o sandbox nativo para o zygote regular.
+
+### Validação da build e do aparelho
+
+A build `out/target/y2s/make_rom-20260919_230510.log` processou o módulo
+`Zygote vendor compatibility` e terminou com sucesso em 31min27s. No
+`work_dir`, os arquivos gerados são idênticos aos assets do módulo e os
+metadados `vendor_configs_file`/0644 foram registrados.
+
+No SM-S926B conectado, a validação em runtime confirmou:
+
+```text
+ro.zygote=zygote64
+ro.product.cpu.abilist=arm64-v8a
+ro.product.cpu.abilist32=[]
+ro.vendor.product.cpu.abilist=arm64-v8a
+init.svc.zygote=running
+init.svc.zygote_next=running
+```
+
+O init importou o arquivo vendor selecionado por propriedade e executou
+`boringssl_self_test64_vendor` com UID 0; o processo terminou com status 0.
+Isso confirma que a adaptação do vendor foi aplicada corretamente.
+
+O smoke test abriu o Chrome atualizado (`versionCode=801004904`,
+`153.0.8010.49`) em 2,7s, mas o log ainda registrou `SIGABRT` no
+`zygote-child` (PID 22929) e continuou exibindo `ZygoteProcess: Connection
+refused`. Portanto, a alteração vendor/BoringSSL entrou e está funcional, mas
+não resolve sozinha a falha do AppZygote nativo do Chrome. O downgrade para a
+versão da `product` continua sendo o próximo A/B de compatibilidade mais
+importante.
+
+## Port do suporte `memory_recursiveprot` do cgroup2 (2026-09-20)
+
+A solicitação para portar as funções cgroup2 do AOSP foi reduzida ao recurso
+que realmente está ausente no kernel 4.19 do ExtremeKRNL: a extensão
+`memory_recursiveprot`. O kernel já possui o subsistema cgroup2 e os
+controladores necessários; substituir todo o cgroup por uma implementação de
+um kernel AOSP mais novo teria alto risco de incompatibilidade com o vendor
+Exynos 990.
+
+O patch
+`platform/exynos990/patches/extremekrnl/patches/0001-accept-memory-recursiveprot-on-legacy-cgroup2.patch`
+foi ampliado para portar a implementação funcional, não apenas ignorar a
+opção de montagem. Ele agora:
+
+- adiciona `CGRP_ROOT_MEMORY_RECURSIVE_PROT` ao conjunto de flags do root;
+- reconhece, aplica e exibe `memory_recursiveprot` nas operações de mount e
+  remount do cgroup2;
+- anuncia a feature em `/sys/kernel/cgroup/features`;
+- porta o cálculo recursivo de proteção para `memory.min` e `memory.low` em
+  `mm/memcontrol.c`, preservando o comportamento antigo quando a flag não é
+  usada.
+
+Validação realizada:
+
+1. O patch foi aplicado e revertido em uma cópia limpa da árvore do
+   ExtremeKRNL, confirmando que pode ser reaplicado pelo `customize.sh` sem
+   depender de alterações locais.
+2. `kernel/cgroup/cgroup.o` e `mm/memcontrol.o` foram compilados com a
+   configuração arm64 do alvo e o Clang 14 usado pelo projeto, sem erros.
+3. Nenhuma imagem de boot foi gerada ou flashada nesta etapa.
+
+O próximo teste deve gerar uma nova imagem do kernel, confirmar no aparelho
+que a montagem mostra `memory_recursiveprot` e repetir o teste do Chrome/AppZygote.
+Esse port melhora a compatibilidade do contrato cgroup2, mas ainda não prova
+que ele seja a única causa do `SIGABRT` no `zygote-child`.
+
+## Correção dos perfis cgroup incompatíveis (2026-09-20)
+
+O primeiro boot com `memory_recursiveprot` ativo confirmou o recurso no
+kernel, mas revelou dois problemas de integração no userspace:
+
+- `SystemServiceCapacityHigh` apontava para o grupo S24+
+  `/dev/cpuset/foreground-boost`, inexistente no vendor do S20+;
+- perfis de I/O eram aplicados antes de os grupos
+  `/dev/blkio/top`, `high`, `normal` e `low` serem criados pelo `init.rc` em
+  `early-fs`.
+
+As correções foram feitas em `prebuilts/samsung/e2sxxx`:
+
+1. `ForegroundBoostCapacityCPUs` e `SystemServiceCapacityHigh` agora usam o
+   grupo existente `/dev/cpuset/foreground`, preservando uma política de CPU
+   válida sem importar o grupo específico do S24+.
+2. `SystemMemoryProcess` voltou a aplicar `JoinCgroup` no grupo v2
+   `memory/system`, agora que o kernel instalado expõe `memory` e o boot
+   confirmou `cgroup.subtree_control=memory`.
+3. `cgroupmem.rc` cria os quatro grupos blkio no `early-init` e ajusta as
+   permissões de `cgroup.procs`, eliminando a corrida com os primeiros perfis
+   de processo. A criação posterior do vendor continua idempotente.
+
+Validação local:
+
+- `task_profiles.json` passou pelo parser JSON;
+- `git diff --check` passou;
+- o aparelho confirmou que `normal` já existe depois do boot, enquanto
+  `foreground-boost` não existe, validando a escolha do fallback para
+  `foreground`.
+
+Ainda não foi gerada uma nova build após essa alteração. O próximo boot deve
+ser verificado para confirmar a ausência de `foreground-boost/tasks` e a
+redução dos avisos `blkio/normal/cgroup.procs`; o aviso do kernel
+`mem_cgroup_update_lru_size(... lru_size -1)` deve ser acompanhado
+separadamente, pois não é causado diretamente por esses perfis.
+
+## Isolamento pós-fork do AppZygote (2026-09-20)
+
+Foi repetido um teste controlado no SM-S926B após a criação dos grupos blkio.
+Os perfis que o zygote nativo usa (`CPUSET_SP_DEFAULT`,
+`SCHED_SP_DEFAULT`, `CPUSET_SP_FOREGROUND`, `SCHED_SP_FOREGROUND`,
+`CPUSET_SP_TOP_APP`, `SCHED_SP_TOP_APP` e `SystemMemoryProcess`) foram
+aplicados a processos temporários com `/system/bin/settaskprofile` e todos
+retornaram `Profile ... is applied successfully`/`rc=0`. Os grupos relevantes
+(`/dev/blkio/high`, `/dev/blkio/normal`, `/dev/cpuctl/foreground`,
+`/dev/cpuset/foreground` e `/dev/cpuset/top-app`) existem no aparelho, e os
+hashes de `task_profiles.json` e `cgroups.json` instalados coincidem com os
+arquivos gerados em `work_dir`.
+
+Ao iniciar o Chrome 153.0.8010.49, o filho ainda aborta sempre no mesmo ponto:
+
+```text
+libprocessgroup: Created cgroup /sys/fs/cgroup/apps/uid_10248/pid_<pid>
+libprocessgroup: A JoinCgroup action in the SystemMemoryProcess profile is used for controller memory in the cgroup v2 hierarchy and will be ignored
+libc: Fatal signal 6 (SIGABRT) ... (zygote-child)
+```
+
+O intervalo entre o aviso do perfil e o `SIGABRT` foi de aproximadamente 7 ms,
+sem erro de cgroup, AVC ou GPU. O `crash_dump64` também não consegue gerar um
+tombstone desse filho (`capset failed: Operation not permitted`), portanto a
+ausência de backtrace não identifica a função que abortou. O kernel expõe
+`CONFIG_SECCOMP=y`/`CONFIG_SECCOMP_FILTER=y`, `cap_last_cap=37` e o zygote
+regular/nativo permanece vivo; não há evidência de que `clone3` seja exigido
+(o zygote AOSP Android 17 usa `fork` nessa revisão).
+
+A comparação dos manifestos mostra a diferença relevante entre a versão que
+funcionava na partição `product` e a atualização que falha. Ambas usam
+`NativeOnlySandboxedProcessService0/1` com `useAppZygote=true` e
+`nativeService=true`, porém:
+
+| versão | preload Java | biblioteca do NativeService |
+| --- | --- | --- |
+| 149.0.7827.102 (product) | `org.chromium.chrome.app.TrichromeZygotePreload` | `libmonochrome_64.so` |
+| 153.0.8010.49 (atualizada) | `org.chromium.content_public.app.ZygotePreload` | `libchrome.so` |
+
+Isso desloca a hipótese principal para a especialização/carregamento do
+NativeService da biblioteca Chrome nova em conjunto com o zygote nativo, não
+para a criação do cgroup2. O próximo A/B deve instalar somente o Chrome da
+`product` (mantendo o restante da build) e repetir o mesmo smoke test; se o
+`zygote-child` sobreviver, o kernel/cgroup fica descartado como causa primária
+e a investigação deve comparar os requisitos nativos de `libchrome.so` com
+`libmonochrome_64.so`.
