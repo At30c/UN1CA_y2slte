@@ -1,0 +1,122 @@
+From 3f5b69c2b2db7e8feef4d4d88a8d44aefc524c5c Mon Sep 17 00:00:00 2001
+From: ditternation <ditternation@localhost>
+Date: Tue, 23 Jun 2026 00:56:00 +0200
+Subject: [PATCH] Avoid unsupported AIDL HAL probes
+
+One UI 9 framework code probes AIDL audio and graphics services before
+falling back to legacy HIDL HALs. Exynos2100 vendor does not implement
+those AIDL HALs, so the probes produce repeated servicemanager VINTF misses.
+Use the HIDL audio fallback directly and keep Watchdog from monitoring AIDL
+audio/graphics interfaces that are intentionally absent on this target.
+---
+ smali/com/android/server/Watchdog.smali           | 42 +++++++++--------------
+ smali/com/android/server/audio/AudioService.smali | 13 -------
+ 2 files changed, 16 insertions(+), 39 deletions(-)
+
+diff --git a/smali/com/android/server/Watchdog.smali b/smali/com/android/server/Watchdog.smali
+index 923058f1e..15a6f53aa 100644
+--- a/smali/com/android/server/Watchdog.smali
++++ b/smali/com/android/server/Watchdog.smali
+@@ -304,56 +304,50 @@
+     const-string/jumbo v26, "android.system.suspend.ISystemSuspend/"
+ 
+     const-string/jumbo v27, "android.hardware.thermal.IThermal/"
+ 
+-    const-string/jumbo v2, "android.hardware.audio.core.IModule/"
++    const-string/jumbo v2, "android.system.suspend.ISystemSuspend/"
+ 
+-    const-string/jumbo v3, "android.hardware.audio.core.IConfig/"
++    const-string/jumbo v3, "android.hardware.thermal.IThermal/"
+ 
+-    const-string/jumbo v4, "android.hardware.audio.effect.IFactory/"
++    const-string/jumbo v4, "android.hardware.biometrics.face.IFace/"
+ 
+-    const-string/jumbo v5, "android.hardware.biometrics.face.IFace/"
++    const-string/jumbo v5, "android.hardware.biometrics.fingerprint.IFingerprint/"
+ 
+-    const-string/jumbo v6, "android.hardware.biometrics.fingerprint.IFingerprint/"
++    const-string/jumbo v6, "android.hardware.bluetooth.IBluetoothHci/"
+ 
+-    const-string/jumbo v7, "android.hardware.bluetooth.IBluetoothHci/"
++    const-string/jumbo v7, "android.hardware.camera.provider.ICameraProvider/"
+ 
+-    const-string/jumbo v8, "android.hardware.camera.provider.ICameraProvider/"
++    const-string/jumbo v8, "android.hardware.drm.IDrmFactory/"
+ 
+-    const-string/jumbo v9, "android.hardware.drm.IDrmFactory/"
++    const-string/jumbo v9, "android.hardware.gnss.IGnss/"
+ 
+-    const-string/jumbo v10, "android.hardware.gnss.IGnss/"
++    const-string/jumbo v10, "android.hardware.health.IHealth/"
+ 
+-    const-string/jumbo v11, "android.hardware.graphics.allocator.IAllocator/"
++    const-string/jumbo v11, "android.hardware.input.processor.IInputProcessor/"
+ 
+-    const-string/jumbo v12, "android.hardware.graphics.composer3.IComposer/"
++    const-string/jumbo v12, "android.hardware.light.ILights/"
+ 
+-    const-string/jumbo v13, "android.hardware.health.IHealth/"
++    const-string/jumbo v13, "android.hardware.media.c2.IComponentStore/"
+ 
+-    const-string/jumbo v14, "android.hardware.input.processor.IInputProcessor/"
++    const-string/jumbo v14, "android.hardware.neuralnetworks.IDevice/"
+ 
+-    const-string/jumbo v15, "android.hardware.light.ILights/"
++    const-string/jumbo v15, "android.hardware.power.IPower/"
+ 
+-    const-string/jumbo v16, "android.hardware.media.c2.IComponentStore/"
++    const-string/jumbo v16, "android.hardware.power.stats.IPowerStats/"
+ 
+-    const-string/jumbo v17, "android.hardware.neuralnetworks.IDevice/"
++    const-string/jumbo v17, "android.hardware.sensors.ISensors/"
+ 
+-    const-string/jumbo v18, "android.hardware.power.IPower/"
++    const-string/jumbo v18, "android.hardware.vibrator.IVibrator/"
+ 
+-    const-string/jumbo v19, "android.hardware.power.stats.IPowerStats/"
++    const-string/jumbo v19, "android.hardware.vibrator.IVibratorManager/"
+ 
+-    const-string/jumbo v20, "android.hardware.sensors.ISensors/"
++    const-string/jumbo v20, "android.hardware.wifi.hostapd.IHostapd/"
+ 
+-    const-string/jumbo v21, "android.hardware.vibrator.IVibrator/"
++    const-string/jumbo v21, "android.hardware.wifi.IWifi/"
+ 
+-    const-string/jumbo v22, "android.hardware.vibrator.IVibratorManager/"
++    const-string/jumbo v22, "android.hardware.wifi.supplicant.ISupplicant/"
+ 
+-    const-string/jumbo v23, "android.hardware.wifi.hostapd.IHostapd/"
+-
+-    const-string/jumbo v24, "android.hardware.wifi.IWifi/"
+-
+-    const-string/jumbo v25, "android.hardware.wifi.supplicant.ISupplicant/"
+-
+-    filled-new-array/range {v2 .. v27}, [Ljava/lang/String;
++    filled-new-array/range {v2 .. v22}, [Ljava/lang/String;
+ 
+     move-result-object v0
+ 
+diff --git a/smali/com/android/server/audio/AudioService.smali b/smali/com/android/server/audio/AudioService.smali
+index 18197f683..3493ef520 100644
+--- a/smali/com/android/server/audio/AudioService.smali
++++ b/smali/com/android/server/audio/AudioService.smali
+@@ -24015,17 +24015,6 @@
+ 
+     move-result-object v1
+ 
+-    const-string/jumbo v2, "android.hardware.audio.core.IModule/default"
+-
+-    invoke-static {v2}, Landroid/os/ServiceManager;->checkService(Ljava/lang/String;)Landroid/os/IBinder;
+-
+-    move-result-object v2
+-
+-    if-eqz v2, :cond_0
+-
+-    goto :goto_1
+-
+-    :cond_0
+     const-string/jumbo v2, "default"
+ 
+     invoke-static {v1, v2}, Landroid/os/HwBinder;->getService(Ljava/lang/String;Ljava/lang/String;)Landroid/os/IHwBinder;
+-- 
+2.52.0

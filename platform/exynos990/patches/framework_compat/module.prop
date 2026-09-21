@@ -1,0 +1,6 @@
+id=framework_compat
+name=Framework compatibility
+version=1.0
+versionCode=1
+author=ditternation
+description=Avoids unsupported One UI 9 AIDL HAL probes on the legacy Exynos 990 vendor stack.
