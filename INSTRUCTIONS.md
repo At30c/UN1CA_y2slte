@@ -1095,3 +1095,696 @@ para a criação do cgroup2. O próximo A/B deve instalar somente o Chrome da
 `zygote-child` sobreviver, o kernel/cgroup fica descartado como causa primária
 e a investigação deve comparar os requisitos nativos de `libchrome.so` com
 `libmonochrome_64.so`.
+
+## Validação da nova beta e escopo do spam do AppZygote (2026-09-20)
+
+O log `logcat_android_20260920_212440.log` mostra que a nova beta melhorou o
+início do sistema: `zygote64` (PID 7381) e `zygote_next` (PID 7505) são
+iniciados normalmente e continuam presentes no relatório do watchdog. Não há
+spam de `ZygoteProcess` durante o boot; o primeiro erro só aparece quando o
+Chrome é aberto.
+
+O problema, entretanto, não foi eliminado. O Chrome instalado é a versão
+153.0.8010.49 (versionCode 801004904), que substitui a cópia antiga da
+`product` (782710233). Ao criar o processo nativo isolado, ocorreram:
+
+- `19.200` mensagens `Got error connecting to zygote` entre 21:24:56 e
+  21:26:43;
+- dois `Fatal signal 6 (SIGABRT)` em processos `zygote-child` (PIDs 20658 e
+  21165), aproximadamente 7 ms depois do aviso de `SystemMemoryProcess`;
+- falhas de `capset`/capacidades no `crash_dump64`, sem tombstone útil;
+- timeout de canal GPU no processo principal do Chrome, consequência da morte
+  do filho nativo;
+- `WATCHDOG KILLING SYSTEM PROCESS` em `ActivityManager:procStart`, seguido de
+  `PLATFORM WATCHDOG RESET`.
+
+Portanto, a nova beta deslocou o sintoma para o caminho de inicialização do
+Chrome/AppZygote, mas ainda não corrigiu a incompatibilidade. O aviso de
+`JoinCgroup` em `SystemMemoryProcess` continua sendo apenas um aviso de ação
+de memória ignorada na hierarquia cgroup v2; o abort ocorre logo depois e não
+há evidência, neste log, de que o `zygote64` regular ou a criação básica dos
+cgroups seja a causa primária. O próximo A/B deve manter o restante da build e
+instalar somente o Chrome/Trichrome da `product`, comparando o caminho antigo
+(`libmonochrome_64.so`) com o atual (`libchrome.so`).
+
+Observação de reprodução: a árvore usada para esta análise contém o arquivo
+vazio `platform/exynos990/patches/cgroup_legacy/disable`. O executor de módulos
+ignora qualquer módulo que possua esse marcador; portanto, se ele estava
+presente no momento da build, o `cgroup_legacy/customize.sh` não foi aplicado.
+
+### Tombstone do processo principal do Chrome
+
+O tombstone de 20/09 às 21:25:34 pertence ao processo principal do Chrome
+(`pid 20607`, `ppid 7381`), não ao `zygote-child`. Ele registra `SIGTRAP` com a
+mensagem fatal do Chromium:
+
+```text
+[FATAL:content/browser/gpu/browser_gpu_channel_host_factory.cc:49]
+Timed out waiting for GPU channel.
+```
+
+Os frames nativos apontam para `libchrome.so` da versão 153.0.8010.49. Isso é
+um abort intencional do Chromium após não receber o canal do processo GPU; o
+`Data Abort` exibido no ESR não deve ser interpretado isoladamente como uma
+falha de memória do kernel. A sequência causal permanece: o processo nativo
+do AppZygote (`zygote-child`) aborta primeiro, o processo GPU não fica
+disponível, o Chrome dispara o timeout e só então gera esse tombstone.
+
+## Nova captura com Chrome/WebView da `product` (2026-09-20)
+
+O arquivo `logcat_android_20260920_213635.log` contém três ciclos do mesmo
+softreboot. A captura confirmou que trocar somente o Chrome atualizado não
+resolve o problema:
+
+- o Chrome 153 da partição `/data` falha com `libchrome.so`;
+- depois, o Chrome 149 da `product` é realmente carregado de
+  `/product/app/Chrome64/Chrome64.apk`, usando
+  `/product/app/TrichromeLibrary64/TrichromeLibrary64.apk!libmonochrome_64.so`;
+- mesmo com essa versão antiga, o processo `zygote-child` aborta e o Chrome
+  termina com o mesmo `Timed out waiting for GPU channel`.
+
+Isso descarta a versão específica de `libchrome.so` como causa suficiente. O
+problema comum é o caminho `NativeOnlySandboxedProcessService`/AppZygote e a
+especialização do processo no sistema/kernel atual.
+
+Há também uma falha de configuração que precisa ser corrigida antes de novos
+A/Bs. Na inicialização do zygote e após cada watchdog, o `init` registra:
+
+```text
+SetCgroup::ExecuteForTask: failed to open /dev/cpuset/foreground-boost/tasks
+Failed to apply SystemServiceCapacityHigh task profile
+init: failed to set task profiles
+```
+
+O grupo `foreground-boost` não existe no S20+. O arquivo vazio
+`platform/exynos990/patches/cgroup_legacy/disable` faz o executor ignorar o
+módulo que substitui esse perfil pelo grupo existente `foreground`; portanto,
+essa build foi testada sem a correção de perfis. O próximo teste deve remover
+esse marcador (ou habilitar o módulo corretamente), confirmar no log que não há
+mais `foreground-boost`, e só então repetir o teste do Chrome antigo.
+
+O WebView também não foi totalmente validado como `product`: o log mostra a
+cópia `/product` (versionCode 777821504) sendo ignorada porque há uma versão
+`/data` mais nova (155.0.8059.4, versionCode 805900413). O WebView 155 consegue
+criar um sandbox regular, mas isso não testa o caminho NativeOnly/AppZygote do
+Chrome.
+
+## Auditoria do módulo `cgroup_legacy` (2026-09-20)
+
+O módulo não foi aplicado na build usada no log. O arquivo vazio
+`platform/exynos990/patches/cgroup_legacy/disable` faz
+`scripts/internal/apply_modules.sh` retornar antes de executar o
+`customize.sh`. Isso é confirmado pelos artefatos da build: o
+`task_profiles.json` ainda aponta `ForegroundBoostCapacityCPUs` e
+`SystemServiceCapacityHigh` para `foreground-boost`, o `cgroupmem.rc` não está
+no `work_dir`, e o `cgroups.json` ainda marca o controlador `memory` como
+`Optional`.
+
+Quando habilitado, o módulo deve corrigir a parte de perfis legados: o arquivo
+doador troca `SystemServiceCapacityHigh` para `cpuset/foreground` e
+`NormalIoPriority` para `blkio/normal`, grupos que existem no S20+. O
+`cgroupmem.rc` tenta ativar `memory` em `/sys/fs/cgroup`, `apps` e `system` em
+vários estágios do boot. Isso pode eliminar as falhas de
+`foreground-boost`/`NormalIoPriority`, mas não prova sozinho que o
+`zygote-child` deixará de abortar: o Android continua emitindo o aviso de que
+`SystemMemoryProcess` em `memory` na hierarquia v2 será ignorado, e o arquivo
+não cria os nós `apps`/`system` caso eles não existam.
+
+O módulo também copia `libchrome.so` para `/system/lib64` e `/vendor/lib64`,
+mas isso não substitui as bibliotecas embarcadas nos APKs do Chrome/WebView
+(`libmonochrome_64.so` no Chrome da `product` ou `libchrome.so` dentro do APK
+atual). Portanto, essa cópia não é uma correção direta do crash do Chromium e
+deve ser validada por ABI antes de ser mantida.
+
+Conclusão: o módulo é uma correção plausível e específica para o erro de
+perfis/cgroups observado, porém a captura atual não o testou. O A/B correto é
+remover o marcador `disable`, reconstruir, verificar no log a ausência de
+`foreground-boost`/`Failed to apply SystemServiceCapacityHigh`, e só então
+avaliar novamente o `zygote-child`, o canal GPU e o softreboot.
+
+## Incompatibilidade adicional da pilha gráfica (2026-09-20)
+
+O timeout do Chromium não deve ser tratado apenas como mensagem secundária.
+Pouco antes do primeiro `zygote-child` abortar, o Chrome pede
+`android.hardware.graphics.allocator.IAllocator/default`, mas o
+`servicemanager` informa que essa instância não existe no VINTF. O mesmo aviso
+aparece durante o boot para `surfaceflinger`, `bootanim`, `mediaswcodec` e
+outros clientes, portanto é uma incompatibilidade sistêmica, não exclusiva do
+Chrome.
+
+O vendor do S20+ declara somente a implementação HIDL antiga:
+`android.hardware.graphics.allocator@2.0::IAllocator/default`,
+`android.hardware.graphics.composer@2.3::IComposer/default` e
+`android.hardware.graphics.mapper@2.1::IMapper/default` em
+`vendor/etc/vintf/manifest.xml`. O serviço correspondente também é HIDL em
+`android.hardware.graphics.allocator@2.0-service.rc`. Já a pilha de sistema
+trazida do S24+ contém clientes AIDL (`IAllocator`/`IComposer`) e tenta
+consultar essas instâncias AIDL.
+
+O módulo `unica/mods/zzz_legacy_graphics_mapper` só remove a barreira de nível
+de API para permitir o fallback interno Gralloc 3/2 do `libui`; ele não cria
+um serviço AIDL nem corrige o VINTF. Na imagem atualmente analisada, os bytes
+do gate ainda estão no estado original, então esse fallback também não foi
+aplicado. O kernel Mali e o `vendor.gralloc-2-0` chegam a iniciar e há várias
+alocações bem-sucedidas, mas isso não elimina a falha de descoberta da
+interface gráfica.
+
+Não é correto apenas adicionar `IAllocator/default` AIDL ao manifesto: isso
+publicaria um serviço que o vendor não implementa. A correção precisa ser uma
+destas duas opções, validada em A/B: fazer `libgui`/`libui` usar de fato o
+fallback HIDL 2.0/2.1 compatível com o vendor, ou portar/fornecer uma ponte
+AIDL real para allocator/composer/mapper. O erro `Timed out waiting for GPU
+channel` deve ser reavaliado depois dessa compatibilidade e da ativação do
+`cgroup_legacy`; ele pode ser consequência da falha de inicialização do
+processo GPU, não uma falha física do Mali.
+
+## Comparação com `MonsterROM/framework_compat` (2026-09-20)
+
+O patch enviado por `devcore94/MonsterROM` confirma a mesma incompatibilidade
+de geração. `0001-Avoid-unsupported-AIDL-HAL-probes.patch` remove de
+`Watchdog.smali` as entradas AIDL
+`android.hardware.graphics.allocator.IAllocator/` e
+`android.hardware.graphics.composer3.IComposer/`, além de fazer o
+`AudioService` usar diretamente o fallback HIDL quando o serviço AIDL de áudio
+não existe.
+
+O nosso `services.jar` contém exatamente essas sondagens em
+`smali/com/android/server/Watchdog.smali` e o mesmo teste AIDL/HIDL em
+`smali/com/android/server/audio/AudioService.smali`, portanto o patch é um
+candidato plausível para ser portado como patch de `services.jar`, após
+validar o contexto e os registradores da revisão atual.
+
+Esse patch reduz sondagens e mensagens de VINTF do framework, mas não corrige
+o crash do GPU por si só. No nosso log, a requisição que precede o abort vem do
+próprio processo Chrome (`uid=10248`), não do `Watchdog`; o patch não toca
+`libgui`, `libui`, `gralloc`, `mapper` nem fornece um servidor AIDL. Portanto,
+ele deve ser tratado como uma correção complementar para o spam/framework,
+enquanto a compatibilidade gráfica HIDL/AIDL continua sendo necessária para
+resolver o canal GPU.
+
+## Validação da beta `logcat_android_20260920_223614.log` (2026-09-20)
+
+Nesta build o módulo `cgroup_legacy` entrou: o `init` processou
+`/system/etc/init/cgroupmem.rc` (linha 8167) e não há mais falha de
+`foreground-boost` nem de `SystemServiceCapacityHigh`. Restam somente a
+condição de corrida inicial de `NormalIoPriority` (o nó
+`/dev/blkio/normal/cgroup.procs` ainda não existe nas linhas 8457–9180) e o
+aviso esperado de que `SystemMemoryProcess` não pode aplicar `memory` na
+hierarquia cgroup v2.
+
+O problema funcional, porém, continua. O Chrome (`pid=19194`) consegue criar
+janela/superfície e há várias alocações `mali_gralloc_allocate` bem-sucedidas;
+ele também percorre o fallback (`mapper 4.x` e `mapper 3.x` não suportados,
+seguido de `Arm Module v1.0`). Logo, a ausência AIDL do allocator é um
+problema de compatibilidade e gera spam, mas não impediu toda a renderização.
+
+A sequência determinante é: `zygote-child` 19243 aborta com `SIGABRT` em
+22:36:31.318, o framework repete `Connection refused`, o Chromium encerra
+com `Timed out waiting for GPU channel` em 22:37:07.045 e, após nova tentativa
+do child 19677, o `system_server` fica bloqueado em
+`AppZygote.connectToZygoteIfNeededLocked` até o `PLATFORM WATCHDOG RESET` de
+22:38:13.577. O tombstone do primeiro child não traz a causa porque o
+`crash_dump64` não conseguiu abrir `/proc/19243`; portanto ainda não há prova
+de que o kernel/Mali seja o responsável direto.
+
+Também confirmei que o patch `framework_compat` do MonsterROM ainda não foi
+aplicado nesta imagem: `services.jar` continua contendo as sondagens AIDL em
+`Watchdog.smali`. Aplicá-lo pode eliminar as sondagens do framework, mas não
+deve ser considerado correção do `zygote-child`/GPU, pois o Chrome faz a
+requisição gráfica diretamente.
+
+Conclusão da nova build: o ajuste de perfis cgroup resolveu aquele ramo de
+erros, mas não resolveu o softreboot. O próximo teste deve separar as
+variáveis: (1) corrigir a criação tardia de `/dev/blkio/normal`, (2) aplicar o
+patch `framework_compat` isoladamente e (3) capturar o child com tombstone
+válido para descobrir o motivo do `SIGABRT`, sem adicionar um serviço AIDL
+falso ao VINTF.
+
+## Rastreamento do timeout GPU até o kernel (2026-09-20)
+
+O caminho mostrado pelo tombstone não é um arquivo do kernel. O binário que
+dispara o abort é
+`/product/app/TrichromeLibrary64/TrichromeLibrary64.apk!libmonochrome_64.so`,
+com a string de origem `../../content/browser/gpu/browser_gpu_channel_host_factory.cc`
+e a mensagem em `:49`. A cópia correspondente existe em
+`out/target/y2s/work_dir/product/app/TrichromeLibrary64/TrichromeLibrary64.apk`;
+ela está stripped, mas `strings` confirma tanto o caminho quanto a mensagem.
+
+Essa linha é um watchdog do Chromium, não o watchdog do Mali: ele chama
+`LOG(FATAL)` quando o canal IPC com o processo GPU não é estabelecido. No log,
+o primeiro `zygote-child` morre às 22:36:31.318 e o Chromium aborta às
+22:37:07.045, intervalo de aproximadamente 35,7 s. Isso coincide com o
+temporizador de Android do Chromium (watchdog do GPU mais fator de reinício e
+5 s), portanto o timeout é consequência de o processo sandbox/GPU não chegar
+ao estado de canal pronto.
+
+O kernel usado pela imagem foi localizado e confirmado no próprio artefato:
+`out/target/y2s/work_dir/kernel/boot.img` contém um `Image` de 43.241.488
+bytes, versão `4.19.325-cip119-st3-ExtremeKRNL-Nexus-v1+`, igual ao
+`out/kernel_tmp-exynos990/build/out/y2s/Image`. O driver GPU correspondente é
+`drivers/gpu/arm/bv_r38p1` (Mali DDK r38p1), e a inicialização registrada é
+`mali 18500000.mali: GPU identified as 0x0 arch 9.0.8 r0p1`.
+
+Há uma incompatibilidade real no lado do kernel/DT, mas ela não é a linha que
+gera o timeout do Chromium: o driver imprime `No OPPs found in device tree!
+Scaling timeouts using 100000 kHz` porque o DT y2s usa a tabela Samsung
+`gpu_dvfs_table` e não fornece um `operating-points-v2` aceito pelo Mali. O
+código que emite essa mensagem é
+`drivers/gpu/arm/bv_r38p1/mali_kbase_core_linux.c:3319-3354`; ele apenas
+escolhe a frequência de referência para calcular timeouts internos do driver.
+Também estão desativados `CONFIG_MALI_DMA_FENCE` e
+`CONFIG_MALI_DMA_BUF_MAP_ON_DEMAND`, mas o log mostra alocações
+`mali_gralloc_allocate` bem-sucedidas e não mostra fault/reset/fence do Mali.
+
+Conclusão: o arquivo do Chromium mostra exatamente por que ele responde com
+`Timed out waiting for GPU channel`, mas não aponta para um arquivo-fonte do
+kernel. A cadeia observada é `AppZygote/zygote-child` abortado → nenhum canal
+GPU pronto → watchdog do Chromium → abort do Chrome → espera do
+`system_server`. O próximo teste deve capturar a causa do `SIGABRT` do
+`zygote-child`; alterar apenas a frequência/timeout do Mali ou a linha 49 do
+Chromium esconderia o sintoma sem fazer o processo sandbox iniciar.
+
+## Aplicação do patch `framework_compat` do MonsterROM (2026-09-20)
+
+Foi adicionado o módulo
+`platform/exynos990/patches/framework_compat/` com o patch revisado enviado
+por `devcore94/MonsterROM`:
+`smali/system/framework/services.jar/0001-Avoid-unsupported-AIDL-HAL-probes.patch`.
+O conteúdo foi mantido, incluindo o cabeçalho Git e os créditos originais:
+autor `ditternation <ditternation@localhost>`. `devcore94` é a origem do
+patch no MonsterROM; At30c não é o autor dessa alteração.
+
+O patch remove de `Watchdog.smali` somente as sondagens AIDL de áudio e
+gráficos que o vendor Exynos 990 não implementa, e elimina de `AudioService`
+o teste de `android.hardware.audio.core.IModule/default` antes do fallback
+HIDL. Ele será aplicado automaticamente por `scripts/internal/apply_modules.sh`
+antes dos módulos `unica`, seguindo a convenção `smali/.../*.jar/*.patch`.
+
+Validação feita contra o `services.jar` atualmente decodificado:
+
+```text
+git diff --check
+git apply --check --directory=out/target/y2s/apktool/system/framework/services.jar \
+  --unsafe-paths platform/exynos990/patches/framework_compat/smali/system/framework/services.jar/0001-Avoid-unsupported-AIDL-HAL-probes.patch
+```
+
+Ambas passaram. A alteração ainda precisa de uma nova build para entrar no
+`services.jar` flashável. O patch reduz as consultas VINTF ausentes do
+framework e força o fallback HIDL de áudio; não cria um servidor AIDL e não
+é, isoladamente, uma correção comprovada para o `zygote-child`/timeout GPU.
+
+## Validação da build com `framework_compat` instalado (2026-09-20 23:48)
+
+A build usada na captura `logcat_android_20260920_234820.log` realmente
+contém o patch: `out/target/y2s/make_rom-20260920_225943.log` registra
+`Processing "Framework compatibility" by @ditternation` e
+`Applying "Avoid unsupported AIDL HAL probes"` ao `services.jar`.
+
+O boot desta imagem chega a `sys.boot_completed=1` às 23:45:46. O kernel é o
+ExtremeKRNL `4.19.325-cip119-st3-ExtremeKRNL-Nexus-v1+`, build `#9`. O módulo
+`cgroup_legacy` continua ativo: não há mais `foreground-boost` nem falha de
+`SystemServiceCapacityHigh`; resta apenas o aviso esperado de que
+`SystemMemoryProcess` não consegue aplicar o controlador `memory` na
+hierarquia cgroup v2.
+
+O teste do Chrome reproduz o problema em duas tentativas:
+
+```text
+23:48:39.066  JoinCgroup(SystemMemoryProcess) ignorado
+23:48:39.073  zygote-child 19780: SIGABRT
+23:49:14.697  Chrome 19724: Timed out waiting for GPU channel
+23:49:45.516  JoinCgroup(SystemMemoryProcess) ignorado
+23:49:45.518  zygote-child 20226: SIGABRT
+23:50:18.151  system_server bloqueado em ActivityManager:procStart por 71 s
+23:50:18.193  PLATFORM WATCHDOG RESET
+```
+
+O `crash_dump64` falha novamente ao abrir `/proc/19780` e `/proc/20226`,
+portanto ainda não há backtrace do processo que realmente aborta. O Chrome
+principal, entretanto, gera tombstone válido e confirma o mesmo abort
+intencional de Chromium em `browser_gpu_channel_host_factory.cc:49`, usando
+`/product/app/TrichromeLibrary64/TrichromeLibrary64.apk!libmonochrome_64.so`.
+O stack do watchdog agora fecha o elo restante: `system_server` fica preso em
+`ZygoteProcess.waitForConnectionToNativeZygote` →
+`AppZygote.connectToZygoteIfNeededLocked` enquanto o socket do AppZygote está
+recusando conexões.
+
+Conclusão desta A/B: o patch de compatibilidade foi aplicado corretamente e
+reduz somente as sondagens do `Watchdog`/áudio do framework; ele não altera a
+requisição AIDL gráfica feita diretamente pelo Chrome e não corrige o abort do
+`NativeOnlySandboxedProcessService`. O processo Chrome chega a criar janela,
+Surface e carregar Vulkan antes da morte do child; não há fault/reset do Mali
+no intervalo. A causa primária continua sendo a inicialização do
+`zygote-child`/AppZygote nativo, ainda sem tombstone útil, e o timeout GPU e o
+softreboot permanecem consequências.
+
+## Captura manual durante a inicialização do Chrome (2026-09-20 23:58)
+
+Foi feita uma captura direcionada com o aparelho conectado e `su` disponível,
+iniciando simultaneamente `logcat -b all`, `dmesg -w`, snapshots de processos,
+lista de tombstones e, depois, executando:
+
+```text
+adb shell am force-stop com.android.chrome
+adb shell am start -W -n com.android.chrome/com.google.android.apps.chrome.Main
+```
+
+A abertura retornou `Status: ok`, `LaunchState: COLD` e `TotalTime: 2347` ms.
+Os artefatos estão em
+`out/target/y2s/manual-chrome-capture-20260920-235817/` (`logcat.txt`,
+`dmesg.txt`, `process-snapshots.txt`, `crash-buffer-final.txt`,
+`tombstones.latest` e `launch.txt`).
+
+A sequência reproduzida foi:
+
+```text
+23:58:21.618  zygote-child 3399 cria cgroup uid_10248/pid_3399
+23:58:21.620  SystemMemoryProcess: controlador memory ignorado no cgroup v2
+23:58:21.627  zygote-child 3399: SIGABRT
+23:58:57.316  Chrome 3294: Timed out waiting for GPU channel
+23:58:58.107  Chrome 3294: SIGTRAP; abort de browser_gpu_channel_host_factory.cc:49
+23:59:27.932  zygote-child 5968 cria cgroup uid_10248/pid_5968
+23:59:27.942  zygote-child 5968: SIGABRT
+```
+
+Durante o intervalo houve 12.860 mensagens `ZygoteProcess: Got error connecting
+to zygote, retrying. msg= Connection refused`, seguidas de falha explícita no
+socket `com.android.internal.os.AppZygoteInit/...` e nova tentativa de iniciar
+`NativeOnlySandboxedProcessService0`. O Chrome principal chegou a criar janela,
+Surface e carregar `libmonochrome_64.so`/Vulkan antes do timeout. O `dmesg` não
+registrou fault, reset ou fence do Mali; os `capset failed` pertencem ao
+`crash_dump64` depois que o child já havia desaparecido. O polling de processos
+não capturou um snapshot do child porque ele termina em poucos milissegundos.
+
+Conclusão: a captura manual confirma que o primeiro evento é o `SIGABRT` do
+`zygote-child`/AppZygote; o erro de GPU do Chrome ocorre cerca de 36 s depois e
+é consequência da ausência do processo sandbox/canal GPU. Ainda não há
+tombstone/backtrace do child para apontar a instrução exata; a próxima coleta
+deve observar o fork/abort com instrumentação mais próxima do processo.
+
+## Auditoria completa de `crash_dump64` e capabilities (2026-09-21)
+
+O spam de `capset failed` não é o primeiro erro. Na captura manual, o filho do
+Chrome (UID 10248) aborta primeiro (`zygote-child` 3399 às 23:58:21.627 e
+5968 às 23:59:27.942). Depois disso, o handler de sinal do Bionic cria o helper
+3407/5970. Em `external/android-tools/vendor/core/debuggerd/handler/debuggerd_handler.cpp`,
+`raise_caps()` copia `CapPrm` para `CapInh`, chama `capset()` e tenta elevar
+cada bit para o conjunto ambient antes de executar `crash_dump64`. Por isso o
+log mostra um `capset failed` seguido de dezenas de `failed to raise ambient
+capability`.
+
+O kernel retorna `-EPERM` quando o novo conjunto herdável contém bits fora do
+bounding set (`out/kernel_tmp-exynos990/security/commoncap.c`) ou quando um
+bit ambient não está simultaneamente em `CapPrm` e `CapInh`. O estado de
+capabilities deixado pelo child/sandbox não é compatível com essa preparação,
+mas isso é consequência do abort, não a evidência de que `crash_dump64` o
+causou. Em seguida o helper tenta abrir `/proc/<pid>` e encontra `ENOENT`, pois
+o child já saiu. O mesmo `crash_dump64` realiza vários dumps normais de outros
+processos na mesma captura, portanto não há falha global do helper.
+
+Há uma hipótese adicional para a causa primária: o sandbox Linux do Chromium
+usa `capset()` para remover capabilities e valida o resultado. Isso torna o
+`SIGABRT` do child compatível com uma falha na inicialização do sandbox, mas
+ainda é necessário capturar `CapInh/CapPrm/CapEff/CapBnd/CapAmb`, `NoNewPrivs`
+e `Seccomp` do child para confirmar. O Chrome foi criado pelo `zygote64`
+(PID 20560), não diretamente pelo `zygote_next`; o `zygote_next` (PID 7476)
+está ativo separadamente. Mesmo assim, o serviço `zygote_next` é `user root`
+sem uma diretiva `capabilities`, portanto deve ser auditado antes de ser usado
+para iniciar processos nativos.
+
+Não foi aplicado patch de supressão de logs: alterar `debuggerd_handler.cpp`
+sem reconstruir o `com.android.runtime.apex` apenas esconderia a evidência e
+não corrigiria o abort do Chrome. O próximo teste deve coletar os conjuntos de
+capabilities/seccomp durante o fork e fazer uma A/B com o caminho do sandbox.
+
+## Linha de investigação do `SIGABRT` no native child (2026-09-21)
+
+A cadeia nativa foi confrontada com o código do Android 17: Chrome inicia
+`NativeOnlySandboxedProcessService` através de `AppZygote`; o serviço usa o
+socket reservado `zygote_next`, que executa a espécie `android-native-app`. No
+filho, o `re_initialize_prologue` da espécie cria o cgroup, instala o filtro
+seccomp de app-zygote e só depois chama `PR_SET_NO_NEW_PRIVS`; a troca de UID e
+a transição SELinux vêm ainda depois. Referências oficiais: [child_process.rs](https://android.googlesource.com/platform/system/zygote/+/refs/heads/android17-release/zygote/src/child_process.rs), [android_native.rs](https://android.googlesource.com/platform/system/zygote/+/refs/heads/android17-release/zygote/src/species/android_native.rs) e [server.rs](https://android.googlesource.com/platform/system/zygote/+/refs/heads/android17-release/zygote/src/server.rs).
+
+Isso isolou uma hipótese testável e mais forte que o cgroup: o kernel entregue
+tem `CONFIG_SECCOMP=y`, `CONFIG_SECCOMP_FILTER=y`, BPF e JIT habilitados
+(`out/kernel_tmp-exynos990/out/.config:459,660-661`), mas o próprio
+`kernel/seccomp.c:382-390` recusa instalar um filtro com `-EACCES` se o processo
+não tiver `CAP_SYS_ADMIN` efetivo e ainda não tiver `NoNewPrivs`. A biblioteca
+instalada contém `set_app_zygote_seccomp_filter` e a mensagem fatal
+`Could not set seccomp filter of size`, confirmando que essa etapa está no
+artefato usado pela ROM (`system/lib64/libseccomp_policy.so`). O caminho AOSP
+de instalação está documentado em [seccomp_policy.cpp](https://android.googlesource.com/platform/bionic/+/master/libc/seccomp/seccomp_policy.cpp).
+
+O `SIGABRT` imediato, sem `SIGSYS`, é compatível com esse `PLOG(FATAL)` caso o
+`prctl(PR_SET_SECCOMP)` receba `EPERM/EACCES`, mas a captura não contém ainda a
+mensagem fatal porque o child dura poucos milissegundos e a auditoria já estava
+perdendo milhares de eventos. Portanto isto é uma causa provável, não uma
+confirmação final. A política SELinux dá `sys_admin` a `zygote_next`
+(`plat_sepolicy.cil:83292-83335`), e o serviço é `user root` sem diretiva
+`capabilities` em `system/etc/init/zygote_next.rc:1-6`; falta verificar o estado
+real herdado em `/proc` (`CapEff`, `CapBnd`, `NoNewPrivs` e `Seccomp`). Política
+SELinux permissiva não prova que a capability esteja efetiva no processo.
+
+Os erros de `SystemMemoryProcess`, `/dev/blkio` e `crash_dump64` continuam
+secundários: o cgroup do child é criado antes do abort, o helper só roda depois
+que o PID desaparece, e os perfis agregados ignoram falhas dos subperfis. Não
+foi aplicado patch; o próximo teste precisa capturar o estado do `zygote_next`
+e, se possível, o `logcat -b crash` imediatamente durante a abertura do Chrome.
+
+Um detalhe adicional torna o teste de capability prioritário: o `raise_caps()`
+do handler não enumera `CapEff`; ele copia `CapPrm` para `CapInh` e depois tenta
+elevar o conjunto ambient. A lista observada (0–5 e 9–37) mostra que o child
+carregava esses bits no conjunto permitido, mas o `capset` falhou porque pelo
+menos um deles não cabia no bounding set. Isso não prova que
+`CAP_SYS_ADMIN` (bit 21) estava efetivo no instante do `PR_SET_SECCOMP`; é
+precisamente `CapEff` e `CapBnd` que precisam ser medidos no `zygote_next`/fork.
+
+## Teste diferencial após o watchdog (2026-09-21)
+
+O dumpstate do watchdog mostrou que o evento não era isolado: o mesmo ciclo se
+repetia em horários diferentes — `zygote-child` aborta, o `AppZygote` perde a
+conexão, `ActivityManager:procStart` fica bloqueado por 70 segundos e o
+Watchdog reinicia o `system_server` (`PLATFORM WATCHDOG RESET`). Isso explica o
+spam posterior de `ZygoteProcess: ... Connection refused`: ele é consequência
+do zygote reiniciado, não a origem do primeiro aborto.
+
+Foi feita uma verificação ao vivo depois do reset. Tanto `zygote_next` (PID
+7476) quanto `zygote64` (PID 11067) estavam com `CapPrm`, `CapEff` e `CapBnd`
+iguais a `0x3fffffffff`, `NoNewPrivs=0` e `Seccomp=0`. Portanto, a hipótese de
+que o zygote pai simplesmente não possuía `CAP_SYS_ADMIN` foi descartada para
+esse estado em execução. O `zygote_next` também tem regras SELinux explícitas
+para `setpcap`, `sys_admin` e cgroup v2. O child ainda precisa ser observado no
+instante do fork; o estado do pai não prova que a transição de capabilities e
+seccomp do filho terminou corretamente.
+
+O sandbox comum do WebView continua funcionando (`webview_zygote` com
+`NoNewPrivs=1`, `Seccomp=2`, e processos isolados criados normalmente). Isso
+estreita o problema para a especialização do caminho nativo/AppZygote usado pelo
+Chrome, e não para todos os sandboxes do sistema.
+
+Foram repetidos dois testes de abertura do Chrome, cada um com captura por mais
+de um minuto. Um usou flags de renderização por software e o outro usou a
+abertura normal. Ambos abriram `ChromeTabbedActivity`; o teste normal criou o
+`com.android.chrome_zygote`, o processo principal, `sandboxed_process0` e
+`privileged_process0`, sem novo `zygote-child`, `SIGABRT`, `crash_dump64`,
+`capset`, timeout de GPU ou watchdog. Assim, a falha não foi reproduzida nessa
+sessão; isso não demonstra que o patch do cgroup resolveu a causa, apenas que o
+estado pós-reset está estável. O teste com flags não permite atribuir causalidade
+à GPU porque a sintaxe de flags do Chrome ainda não foi confirmada.
+
+Conclusão operacional atual: `crash_dump64` continua sendo um observador
+secundário, e o erro de GPU só deve ser tratado como causa primária se voltar a
+aparecer sem o `SIGABRT` anterior. A próxima coleta útil é reproduzir a falha a
+frio com logcat limpo e instrumentar especificamente a instalação do filtro
+seccomp/transição de capabilities do `android-native-app`; aplicar um patch de
+silenciamento no handler ou no cgroup neste momento esconderia a evidência.
+
+## Comparação entre navegadores Chromium (2026-09-21)
+
+O aparelho não possui Firefox instalado neste momento, portanto não foi possível
+fazer uma comparação direta com Gecko. Ele possui, porém, o Samsung Internet
+(`com.sec.android.app.sbrowser`), que também usa Chromium. Após encerrá-lo e
+abri-lo com captura limpa por 55 segundos, ele criou normalmente o processo
+principal, `sandboxed_process0` e `privileged_process0` — inclusive um segundo
+`sandboxed_process0` — sem `zygote-child`, `SIGABRT`, `crash_dump64`, `capset`,
+timeout de GPU ou watchdog.
+
+Os processos do Samsung Internet exibiram a mesma assinatura de sandbox esperada
+do Chromium: `Seccomp=2`, capabilities zeradas; os processos isolados tinham
+`NoNewPrivs=1`. O Chrome apresentou a mesma arquitetura no teste anterior. Há
+uma ressalva importante: essa captura só mostrou `SandboxedProcessService`; ela
+não mostrou `NativeOnlySandboxedProcessService`, que é justamente o caminho
+AppZygote/nativo associado ao aborto observado anteriormente. Portanto o teste
+prova que o sandbox Chromium comum funciona, mas ainda não valida o caminho
+nativo que está sob suspeita; também não há evidência de que todo Chromium seja
+inevitavelmente incompatível com o kernel.
+
+A correlação com “Chromium falha, Firefox funciona” continua útil para priorizar
+`AppZygote`/seccomp/capabilities e a inicialização dos processos nativos, mas não
+isola ainda qual etapa quebra no boot problemático. O próximo A/B conclusivo deve
+ser feito após reinicialização, com Chrome e Samsung Internet iniciados antes de
+qualquer outro navegador, preservando o logcat desde o início.
+
+## A/B após reinicialização com Firefox (2026-09-21)
+
+Foi feito um reboot real e o Chrome foi aberto assim que `sys.boot_completed=1`.
+No log permanente, ele iniciou às 03:02:27, criou o processo principal, o
+`com.android.chrome_zygote`, `SandboxedProcessService0` e
+`privileged_process0`; não houve `zygote-child`, `SIGABRT`, `crash_dump64`,
+timeout de GPU ou watchdog nessa inicialização fria.
+
+O Firefox (`org.mozilla.firefox`) foi localizado e aberto em seguida. Ele criou
+o processo principal e vários processos Gecko (`tab_disable_art_image_*` e
+`gpu_disable_art_image_`) diretamente a partir do `zygote64`, sem
+`AppZygote`/`zygote_next`; a sessão permaneceu estável por 50 segundos. Isso
+confirma a diferença arquitetural observada pelo usuário: Firefox não depende
+do caminho Chromium/AppZygote. Ao mesmo tempo, o Chrome também passou nesse boot,
+logo o defeito não é reproduzido deterministicamente apenas por iniciar o
+navegador.
+
+O próximo teste precisa provocar especificamente o serviço
+`NativeOnlySandboxedProcessService` do Chrome (o serviço aparece nos logs antigos
+antes do `zygote-child`), em vez de testar somente a abertura da atividade e o
+`SandboxedProcessService` comum. Só então será possível capturar a transição de
+capabilities/seccomp que diferencia o caso que falha do caso estável.
+
+## Relatório `chrome://gpu` (2026-09-21)
+
+O relatório fornecido pelo aparelho confirma que a GPU está ativa, e não
+desabilitada por `--disable-gpu`: Canvas, composição, rasterização, vídeo,
+WebGL e WebGPU aparecem como `Hardware accelerated`; OpenGL e Vulkan estão
+`Enabled`; o dispositivo ativo é o Mali-G77 (`0x13b5/0x90800011`); e o backend
+Skia é `GaneshVulkan`. A linha `Command Line` não contém `--disable-gpu`, e o
+campo `GPU process crash count` está em `0`.
+
+As entradas em `Driver Bug Workarounds` são compatibilidades normais do
+Chromium para Mali/Android (MSAA 4x, virtualized contexts, limitações de
+textura e extensões); não há, nesse relatório, indicação de GPU bloqueada,
+context lost ou reset do driver. Portanto não foi a GPU que “foi desativada”
+para fazer os navegadores abrirem. O timeout antigo do canal GPU pode ter sido
+transitório ou consequência do `zygote-child`/processo nativo ausente; este
+relatório isolado não prova que o driver seja a causa primária.
+
+## Estado funcional atual e workaround confirmado (2026-09-21)
+
+Durante a sessão que permaneceu estável, o aparelho não estava executando a beta
+do Chrome. A instalação ativa foi confirmada ao vivo como:
+
+```text
+com.android.chrome          /product/app/Chrome64        149.0.7827.102
+com.google.android.webview  /product/app/WebViewGoogle64  148.0.7778.215
+```
+
+Essas são as versões da `product`/base, depois do downgrade que já havia sido
+observado como workaround. O Chrome ativo criou `com.android.chrome_zygote`,
+`SandboxedProcessService0` e `PrivilegedProcessService0` normalmente; não houve
+`NativeOnlySandboxedProcessService`, `zygote-child` ou watchdog nessa sessão.
+
+Assim, o que tornou o aparelho utilizável foi a combinação do Chrome/WebView
+compatíveis da `product` com a reinicialização dos processos após o reboot — não
+`--disable-gpu` e não uma alteração no `debuggerd`. O módulo `cgroup_legacy`
+deve permanecer habilitado (sem o marcador `disable`) para que os arquivos de
+cgroup/tarefa compatíveis sejam instalados. Isso é um workaround operacional;
+a beta 153 e seu caminho nativo ainda precisam de uma correção própria antes de
+serem reativados.
+
+## Reprodução com Microsoft Edge/Chromium (2026-09-21)
+
+O Microsoft Edge instalado (`com.microsoft.emmx`, versão `153.0.4234.49`,
+`target_sdk_version=36`, split `chrome`) reproduziu o mesmo defeito ao ser
+aberto por `am start -W -n com.microsoft.emmx/com.microsoft.ruby.Main`. A captura
+controlada está em `/tmp/edge-20260921-032428.log`.
+
+O encadeamento observado foi explícito:
+
+```text
+03:24:32.558  ActivityManager: Start proc ... com.microsoft.emmx:privileged_process0
+03:24:32.676  libc: Fatal signal 6 (SIGABRT) ... tid ... (zygote-child)
+03:24:32.938  libc: capset failed: Operation not permitted
+03:24:32.958  crash_dump64: failed to open /proc/...
+03:24:32.959  libc: Crash due to signal: crash_dump helper failed ...
+03:24:32.651+ ZygoteProcess: Got error connecting to zygote, retrying
+```
+
+Foram contadas 11.923 mensagens de `Connection refused` durante a captura.
+Também apareceu o aviso de `SystemMemoryProcess`/cgroup v2, mas ele continua
+sendo um aviso de ação ignorada, não a causa imediata do aborto. Portanto o
+problema é reproduzível em dois aplicativos Chromium independentes (Chrome e
+Edge) e está no caminho comum de inicialização nativa/AppZygote/zygote-child;
+não é um defeito exclusivo do APK do Chrome. O `capset` e o `crash_dump64` são
+consequências do processo filho já abortado.
+
+Esse teste não demonstrou que a GPU seja a origem: o Edge chegou a iniciar a
+atividade e o processo privilegiado antes do aborto, e a captura não contém um
+timeout de GPU anterior ao `SIGABRT`. O workaround continua sendo manter
+Chrome/WebView/Chromium em versões compatíveis da `product` ou usar Firefox
+enquanto o caminho nativo da beta não for corrigido.
+
+## A/B do Edge com as flags usadas no Chrome (2026-09-21)
+
+Foi repetido no Edge o procedimento de abertura usado durante o teste do
+Chrome, sem alteração permanente na ROM. Foram tentadas as duas sintaxes que
+aparecem na captura histórica:
+
+```text
+adb shell am force-stop com.microsoft.emmx
+adb shell am start -W -n com.microsoft.emmx/com.microsoft.ruby.Main \
+  --esa command-line-flags --disable-gpu \
+  --esa command-line-flags --disable-gpu-compositing
+
+adb shell am force-stop com.microsoft.emmx
+adb shell am start -W -n com.microsoft.emmx/com.microsoft.ruby.Main \
+  --es args --disable-gpu
+```
+
+Ambas retornaram `Status: ok` e abriram a atividade do Edge, mas ambas
+reproduziram o mesmo aborto do processo nativo:
+
+```text
+03:33:38.945  libc: Fatal signal 6 (SIGABRT) ... (zygote-child)
+03:33:38.953  libc: capset failed: Operation not permitted
+
+03:36:16.518  libc: Fatal signal 6 (SIGABRT) ... (zygote-child)
+03:36:16.634  crash_dump64: failed to open /proc/...
+```
+
+As capturas foram salvas em `/tmp/edge-disable-gpu-20260921-033336.log` e
+`/tmp/edge-disable-gpu-es-20260921-033610.log`. O segundo teste ainda registrou
+7.795 recusas de conexão ao zygote. Portanto a flag `--disable-gpu` não é a
+solução para esse caminho: o processo privilegiado/AppZygote morre antes de um
+eventual problema gráfico. O Chrome que abriu anteriormente não provou que a
+flag o corrigiu; ele estava usando a versão compatível da `product` e um estado
+estável após o reset.
+
+## Regressão reproduzida no Chrome após reboot (2026-09-21 03:44)
+
+O log permanente `logcat_android_20260921_033344.log` mostra que o problema
+voltou mesmo com o Chrome/WebView da `product` (Chrome `149.0.7827.102`). O
+aparelho havia acabado de reiniciar (`uptime` de aproximadamente um minuto), e
+o Chrome foi iniciado às 03:44:41:
+
+```text
+03:44:41.353  ActivityManager: Start proc ... com.android.chrome
+03:44:41.559  libprocessgroup: cgroup uid_10248 criado
+03:44:43.181  libprocessgroup: cgroup do pid 15127 criado
+03:44:43.183  SystemMemoryProcess: ação de memory ignorada no cgroup v2
+03:44:43.191  libc: Fatal signal 6 (SIGABRT) ... (zygote-child)
+03:44:43.235  libc: capset failed: Operation not permitted
+03:44:43.277  crash_dump64: failed to open /proc/15127
+03:45:19.079  chromium: Timed out waiting for GPU channel
+03:45:21.087  DEBUG: SIGTRAP; abort message = GPU channel timeout
+```
+
+Após o primeiro aborto foram contadas 6.713 mensagens de `Connection refused`.
+O `dumpsys activity` ainda identifica o serviço
+`NativeOnlySandboxedProcessService0` do Chrome, mas com `thread=null`, enquanto
+o processo principal permanece vivo esperando o child nativo. Isso confirma a
+ordem causal já observada: o `zygote-child` morre primeiro, o socket do
+AppZygote deixa de responder e o timeout da GPU ocorre depois.
+
+Conclusão atualizada: o downgrade para a `product` reduz a frequência, mas não
+elimina o defeito. O problema continua reproduzível a frio no caminho comum
+`NativeOnlySandboxedProcessService`/AppZygote/`zygote_next`; não deve ser
+considerado resolvido por versão do Chrome, `--disable-gpu` ou pelo aviso de
+`SystemMemoryProcess`.
