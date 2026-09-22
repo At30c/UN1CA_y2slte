@@ -2604,3 +2604,26 @@ O patch `0003-capabilities-add-android17-bounding-set-abi.patch` deve permanecer
 configuração de produção. Os módulos `appzygote_compat` e
 `zzzzz_zygote_next_trace` continuam sendo apenas tentativas/instrumentação de
 diagnóstico e podem ser retirados depois de uma última validação sem TRACE.
+
+### Backport enviado ao repositório próprio do kernel
+
+O repositório `SSM_990v2BYEXTREME` já continha os commits de
+`memory_recursiveprot` e `cgroup.kill`. O único trecho faltante do diagnóstico
+do zygote foi aplicado diretamente no kernel e enviado para `origin/main`:
+
+```text
+50782bcd1df5 capabilities: add Android 17 bounding-set ABI
+```
+
+Arquivos alterados no kernel:
+
+```text
+include/uapi/linux/capability.h
+security/selinux/include/classmap.h
+```
+
+O patch `0003` continua no repositório da ROM como fallback para clones antigos
+do kernel. Quando o build usar o kernel a partir de `50782bcd1df5`, o
+`customize.sh` detectará que o patch já foi aplicado e não o duplicará. Os
+diretórios gerados `build/out`, `out` e `toolchain/clang_14` não foram incluídos
+no commit do kernel.
