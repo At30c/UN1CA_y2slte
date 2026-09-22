@@ -1788,3 +1788,819 @@ elimina o defeito. O problema continua reproduzível a frio no caminho comum
 `NativeOnlySandboxedProcessService`/AppZygote/`zygote_next`; não deve ser
 considerado resolvido por versão do Chrome, `--disable-gpu` ou pelo aviso de
 `SystemMemoryProcess`.
+
+## Auditoria profunda de zygote, AppZygote, seccomp, namespaces e init (2026-09-21)
+
+Foi feita uma coleta direta no aparelho, sem alterar a ROM. O estado atual é:
+
+```text
+ro.zygote=zygote64
+zygote64       PID 15928  domain=u:r:zygote:s0       Seccomp=0
+zygote_next    PID  7128  domain=u:r:zygote_next:s0  Seccomp=0
+webview_zygote PID 28336  domain=u:r:webview_zygote:s0 Seccomp=2 NoNewPrivs=1
+Chrome         PID 29598  domain=u:r:untrusted_app_34:s0 Seccomp=2
+```
+
+O Chrome principal tem `PPid=zygote64`; portanto `zygote_next` está ativo, mas
+não é o pai direto do Chrome nesta build. O `zygote_next` é iniciado pelo
+gatilho `persist.zygote.zygote_next.start_on_boot=true` em
+`system/etc/init/zygote_next.rc`. Os sockets `/dev/socket/zygote` e
+`/dev/socket/zygote_next` existem e têm permissões `root:system 0660`.
+
+O kernel expõe `CONFIG_SECCOMP=y` e `CONFIG_SECCOMP_FILTER=y`, mas não possui
+`CONFIG_USER_NS` nem `CONFIG_IPC_NS`; também não possui `CONFIG_CGROUP_PIDS` e
+`CONFIG_CGROUP_DEVICE`. Os namespaces `user` e `ipc` não aparecem em `/proc`.
+Isso é uma diferença real em relação a kernels AOSP mais completos e pode ser
+relevante para o sandbox nativo Chromium, embora o log não prove sozinho que
+essa seja a chamada que aborta.
+
+O caminho que falha foi isolado:
+
+1. `com.android.chrome:privileged_process0` inicia normalmente e o processo
+   `com.android.chrome_zygote` chega a existir.
+2. O serviço comum `SandboxedProcessService0` chega a funcionar em sessões
+   anteriores.
+3. A falha ocorre ao iniciar
+   `NativeOnlySandboxedProcessService0`. Nesse momento o AppZygote perde o
+   socket `com.android.internal.os.AppZygoteInit/<uuid>` e passa a registrar
+   `Connection refused`.
+4. Logo depois o processo filho aborta como `zygote-child`.
+
+No log de 03:45:49, a ordem é explícita:
+
+```text
+2043309  AppZygote: retry starting ... NativeOnlySandboxedProcessService0
+2043312  libprocessgroup: Created cgroup ... pid_15623
+2043314  JoinCgroup/SystemMemoryProcess ignorado no cgroup v2
+2043321  libc: Fatal signal 6 (SIGABRT) ... zygote-child
+2043324  crash_dump64: falha ao abrir /proc/15623
+```
+
+O aviso `SystemMemoryProcess` não é uma negação SELinux: o `libprocessgroup`
+deliberadamente ignora essa ação quando o controlador `memory` está na
+hierarquia cgroup v2. O controlador está ativo (`cgroup.controllers` e
+`cgroup.subtree_control` contêm `memory`), mas a build também registra no boot
+falhas ao abrir `/dev/blkio/normal/cgroup.procs` e montagens legacy `freezer`
+com `Device or resource busy`. Isso indica que o módulo `cgroup_legacy` ainda
+mistura perfis de cgroup do S24+ com a topologia legacy do kernel; a mistura
+não deve ser considerada validada apenas porque o grupo v2 foi montado.
+
+Não foram encontrados `avc: denied` envolvendo zygote/Chrome no instante do
+aborto. Há perda de eventos (`kauditd hold queue overflow`), portanto a
+ausência de AVC não elimina completamente uma negação, mas o sinal observável
+continua sendo a especialização nativa/AppZygote, não a GPU nem o zygote64
+principal.
+
+## Veredito após reprodução limpa do Chrome (2026-09-21 11:27)
+
+Foi feita uma reprodução sem flags, com o logcat limpo antes de abrir o Chrome.
+A ordem observada foi:
+
+```text
+11:26:59.835  zygote64: Forked child process 7663
+11:26:59.836  ActivityManager: Start proc 7663:com.android.chrome
+11:27:00.383  libprocessgroup: Created cgroup .../apps/uid_10248/pid_7719
+11:27:00.388  SystemMemoryProcess: JoinCgroup(memory) ignorado em cgroup v2
+11:27:00.393  libc: Fatal signal 6 (SIGABRT) em zygote-child 7719
+11:27:00.404  crash_dump64: failed to open /proc/7719
+```
+
+O processo principal do Chrome chega a criar a janela e continua vivo; quem
+abortou foi o filho nativo criado para o sandbox. As recusas de conexão ao
+zygote aparecem imediatamente depois do abort e não antes dele. Não houve
+`GPU channel timeout` nessa janela de reprodução; os timeouts de GPU dos
+tombstones anteriores são consequência de o processo auxiliar não existir.
+
+Foi verificado ainda o código efetivamente usado pelo build em
+`external/android-tools/vendor/core/libprocessgroup/task_profiles.cpp`: entre
+as linhas 975–987, qualquer ação `JoinCgroup` cujo controlador esteja na
+hierarquia cgroup v2 é deliberadamente descartada com o aviso
+`will be ignored`. Portanto, o `cgroupmem.rc` do módulo
+`platform/exynos990/patches/cgroup_legacy` não torna o perfil
+`SystemMemoryProcess` aplicável ao filho; ele apenas habilita `memory` e
+mantém uma configuração híbrida. O mesmo boot registra falhas em
+`/dev/blkio/normal/cgroup.procs` e leituras de `cgroup.procs` do Freecess.
+
+### Conclusão técnica
+
+O problema primário está no caminho de especialização do filho nativo
+Chromium/AppZygote (zygote-child), provocado por incompatibilidade entre o
+userspace Android 17, os perfis/cgroups legados importados e as capacidades/
+namespaces disponíveis no kernel 4.19. O `zygote64` principal não é a origem:
+ele permanece executando e cria processos comuns. A GPU e `crash_dump64` são
+efeitos posteriores. A hipótese mais acionável é remover ou adaptar o módulo
+`cgroup_legacy`; a confirmação binária final exige uma build A/B sem esse
+módulo, mantendo Chrome/APEX/kernel idênticos.
+
+## Verificação e correção do módulo cgroup_legacy (2026-09-21)
+
+O sistema da ROM vem de `SM-S926B_EUX` (S24+), enquanto o vendor vem de
+`SM-G986B_AUT` (S20+). Portanto, os arquivos nativos do firmware alvo não
+podem substituir os descritores do sistema: o S20+ usa `/acct` e não define
+`SystemServiceCapacityHigh`, mas os `init.rc` do S24+ usam `/dev/acct` e esse
+perfil. O módulo agora usa os descritores `e2sxxx` compatíveis, que mantêm
+`/dev/acct`, remapeiam `foreground-boost` para `foreground` e removem o
+perfil `cpu_mid` inexistente no kernel/ vendor do S20+.
+
+O `libcgrouprc.so` e o `libchrome.so` do sistema permanecem os binários do
+S24+; a comparação ELF mostrou somente dependências padrão (`libbase`,
+`libc++`, `libc`, `libm`, `libdl`) e os símbolos `LIBCGROUPRC`/`LIBCGROUPRC_30`,
+todos disponíveis no runtime. O `vendor/lib64/libchrome.so` do doador foi
+removido por não ser uma dependência do cgroup.
+
+O `cgroupmem.rc` é mantido porque o kernel 4.19 desta build expõe
+`CONFIG_MEMCG=y`, `CONFIG_MEMCG_SWAP=y` e `memory_recursiveprot`; no aparelho,
+`memory` está disponível em `/sys/fs/cgroup`, `apps` e `system`. A verificação
+foi corrigida: o freezer v2 já está implementado no kernel e os grupos-filhos
+expõem `cgroup.freeze`; ele não aparece em `cgroup.controllers` porque não é
+um controlador separado. A única interface v2 ausente era `cgroup.kill`.
+
+## Backport de cgroup.kill (2026-09-21)
+
+Foi adicionado `platform/exynos990/patches/extremekrnl/patches/0002-cgroup2-add-cgroup-kill-interface.patch`.
+O backport implementa a interface `cgroup.kill` no core cgroup2 do kernel 4.19:
+aceita somente `1`, mata processos de usuário do grupo e de todos os
+descendentes, ignora threads do kernel, rejeita cgroups threaded e fecha a
+condição de corrida de fork marcando o grupo durante a iteração e terminando
+filhos criados nesse intervalo. O freezer v2 existente não foi duplicado nem
+alterado.
+
+O `task_profiles.json` compatível `e2sxxx` agora também declara o atributo
+`CgroupKill` (`cgroup2/cgroup.kill`), de modo que o userspace S24+ possa usar a
+interface quando o kernel atualizado estiver instalado. O aplicador de patches
+do ExtremeKRNL passou a percorrer todos os patches em ordem, mantendo
+idempotência para builds incrementais. A compilação do objeto
+`kernel/cgroup/cgroup.o`, a aplicação/reversão do patch, a sintaxe do script e
+o JSON foram validados localmente.
+
+O módulo foi atualizado para a versão 2.2/`versionCode=4`. Ainda é necessária
+uma nova build/flash para verificar no aparelho `/sys/fs/cgroup/apps/cgroup.kill`
+e testar a escrita controlada `echo 1 > .../cgroup.kill`; a função é uma
+capacidade de gerenciamento de processos e não, por si só, uma correção
+garantida para o crash do Chrome.
+
+## Verificação no aparelho e créditos dos patches (2026-09-21)
+
+Foi feita uma leitura somente no aparelho conectado `RX8NB005S3Z`, sem escrever
+em nenhum cgroup. O kernel atualmente instalado confirma:
+
+```text
+/sys/fs/cgroup:        cgroup.freeze=no  cgroup.kill=no
+/sys/fs/cgroup/apps:   cgroup.freeze=yes cgroup.kill=no
+/sys/fs/cgroup/system: cgroup.freeze=yes cgroup.kill=no
+features: nsdelegate, memory_recursiveprot
+controllers: memory
+```
+
+Isso confirma que o freezer v2 já está ativo nos grupos-filhos e que o
+`cgroup.kill` ainda não aparece porque a imagem com o patch 0002 ainda não foi
+buildada/flashada. Depois do flash, a mesma leitura deve mostrar
+`cgroup.kill=yes` em `apps` e `system`.
+
+Também foram corrigidos 11 cabeçalhos de patches que usavam identidades
+genéricas (`UN1CA maintainers`, `UN1CA y2slte`, `Codex`, `localhost` ou domínio
+de exemplo). Eles agora usam o crédito solicitado:
+`From: At30c <PabloAtsoc9993@outlook.com>`. Autores reais de terceiros não
+foram alterados.
+
+## Variante A/B para os APEX de runtime (2026-09-21)
+
+Foi adicionada uma variante selecionável para testar a hipótese de que a
+mescla ARM32 do runtime está relacionada ao crash de navegadores Chromium.
+`EXYNOS990_RUNTIME32_APEX_MODE="source_apex"` agora é o padrão da plataforma:
+preserva os APEX originais do S24+. O modo anterior continua disponível com
+`EXYNOS990_RUNTIME32_APEX_MODE="merged"`; ele importa o payload ARM32 do r11s
+para `com.android.runtime`/`com.android.i18n`, além dos binários de linker e
+das bibliotecas soltas de compatibilidade.
+
+Essa opção não troca nem remove `com.android.vndk.v30`: o VNDK 30 continua
+sendo necessário para a interface do vendor do S20+. O teste altera somente
+o caminho dos APEX de Runtime/I18n/ART e seus complementos ARM32.
+
+O modo `source_apex` já está aplicado diretamente em
+`platform/exynos990/config.sh`, portanto basta carregar o ambiente e iniciar a
+build. Ele preserva integralmente os APEX originais do S24+
+(`com.android.runtime`, `com.android.i18n` e ART) e não instala o linker,
+nem mescla esses arquivos dentro dos APEX. Para que os serviços ARM32 do
+vendor ainda possam iniciar, ela instala o linker e os quatro Bionic básicos
+do donor como arquivos standalone em `/system/bin` e `/system/lib`; a única
+exceção adicional é o `system/lib/libstagefright.so`, mantido porque o módulo
+WFD aplica um patch direto nele. As dependências ARM32 não-Bionic são
+resolvidas recursivamente. As propriedades de compatibilidade restantes
+continuam sendo aplicadas. A variante é
+intencionalmente diagnóstica: serviços legados 32-bit (por exemplo OMX) podem
+deixar de iniciar, mas o resultado separa a causa APEX da causa Chromium/GPU.
+
+Exemplo:
+
+```bash
+source buildenv.sh y2s
+aether
+```
+
+Para testar novamente o comportamento anterior sem editar arquivos, use
+`EXYNOS990_RUNTIME32_APEX_MODE=merged aether` depois de carregar o ambiente.
+
+A sintaxe dos scripts foi validada com `bash -n`; a geração atual continua
+produzindo `EXYNOS990_RUNTIME32_APEX_MODE="source_apex"` por padrão. Nenhuma
+build ou instalação dessa variante foi executada ainda.
+
+Durante o primeiro teste da variante, o módulo WFD falhou porque o
+`libstagefright.so` isolado ainda dependia de `libcrypto.so`. O resolvedor do
+WFD agora percorre automaticamente o `DT_NEEDED` não-Bionic do stagefright;
+essa árvore contém 185 bibliotecas do r11s e não apresentou dependências
+ausentes. O fechamento foi verificado com `readelf` sem instalar ou modificar
+o aparelho.
+
+O teste seguinte revelou uma dependência cruzada nos binários WFD do r9s:
+`libhdcp2.so` precisava de `libion.so`, disponível apenas no prebuilt r11s.
+O resolvedor agora pesquisa os dois doadores (r9s primeiro para os binários WFD
+e r11s como fallback), incluindo o fechamento completo de todos os roots WFD.
+O novo levantamento totalizou 214 bibliotecas resolvidas, sem ausências.
+
+Na execução seguinte, a validação ainda encontrou `libstagefright.so` →
+`lib_soundaliveresampler.so`. O resolvedor agora também é chamado no limite da
+validação: se qualquer `DT_NEEDED` estiver faltando no `work_dir`, ele busca a
+biblioteca nos dois doadores, instala o fechamento e só então valida o ELF.
+Dependências previamente marcadas durante ciclos não podem mais mascarar um
+arquivo que não foi instalado.
+
+O primeiro flash do modo `source_apex` mostrou que o vendor ARM32 não iniciava
+porque `/system/bin/linker` não existia. O diagnóstico no aparelho registrou
+`init: cannot execv(...)` para os serviços DRM, áudio, GeoTrans e OMX. A
+variante agora extrai o linker/Bionic ARM32 do Runtime donor sem modificar o
+APEX do S24+, eliminando essa causa de bootloop.
+
+Na confirmação seguinte no aparelho `RX8NB005S3Z`, `/system/bin/linker`,
+`linker_asan`, `libc.so`, `libdl.so` e `libm.so` estavam ausentes; `bootanim`
+continuava `running`, `sys.boot_completed` não era publicado e o uptime voltou
+a reiniciar. Isso confirma que o bootloop observado era a ausência do runtime
+ARM32 standalone, não uma morte do zygote 64-bit.
+
+Após a instalação do runtime standalone, o erro seguinte ficou explícito:
+`libprocessgroup.so` do VNDK 30 não encontrava `libcgrouprc.so` no namespace
+32-bit. O módulo `cgroup_legacy` agora instala o `libcgrouprc.so` ARM32 e os
+`libbase.so`/`libc++.so` correspondentes do mesmo donor r11s em `system/lib`;
+as bibliotecas Bionic continuam vindo do runtime standalone.
+
+## Captura confirmada do crash do Chrome e mitigação AppZygote (2026-09-21)
+
+Na captura `logcat_android_20260921_160613.log`, o Chrome foi aberto sem
+flags. O processo nativo do sandbox (`zygote-child`, PID 19316) abortou
+primeiro:
+
+```text
+16:10:12.612  libprocessgroup: SystemMemoryProcess ... controller memory ... will be ignored
+16:10:12.617  libc: Fatal signal 6 (SIGABRT) ... pid 19316 (zygote-child)
+16:10:12.634  crash_dump64: failed to open /proc/19316: No such file or directory
+```
+
+O `crash_dump64` falhou nesse filho porque ele já havia desaparecido quando o
+helper tentou abrir `/proc`. O processo principal do Chrome permaneceu vivo e
+abortou depois, desta vez com captura completa. Foi criado no aparelho
+`/data/tombstones/tombstone_15` às 16:10:48:
+
+```text
+Executable: /system/bin/app_process64
+Cmdline: com.android.chrome
+pid: 19270, ppid: 7021
+signal 5 (SIGTRAP), code 1 (TRAP_BRKPT)
+Abort message: '[FATAL:content/browser/gpu/browser_gpu_channel_host_factory.cc:49] Timed out waiting for GPU channel.'
+```
+
+O tombstone confirma que o timeout de GPU é consequência da morte do filho
+native/AppZygote: o canal GPU nunca fica disponível. Ele não aponta para um
+defeito independente no `crash_dump64` ou no driver GPU. Depois do timeout, o
+framework entrou novamente em loop de `Connection refused`; às 16:12:00 o
+`system_server` morreu e o zygote foi encerrado pelo init, produzindo o
+soft-reboot observado.
+
+Foi adicionada a variante experimental `unica/mods/appzygote_compat`. Ela
+define `ro.unica.disable_app_zygote=true` e aplica
+`services.jar/0001-Route-native-sandbox-away-from-AppZygote.patch`. O patch é
+propriedade-gated e, quando ativo, força somente a ramificação de serviços
+native que usaria `AppZygote` a seguir pelo zygote regular. O zygote comum e o
+WebView zygote não são alterados. Isso é uma mitigação A/B reversível para
+testar a causa primária; não é um patch no `libchrome.so` nem uma desativação
+global da GPU.
+
+Validações realizadas:
+
+1. `bash -n unica/mods/appzygote_compat/customize.sh`.
+2. `git diff --check`.
+3. `git apply --check` do patch contra o `ProcessList.smali` Android 17
+   atualmente decodificado.
+4. Aplicação do patch em uma cópia temporária, confirmando `.locals 39`, uso
+   de `invoke-static/range` válido e o desvio antes de
+   `createAppZygoteForProcessIfNeeded()`.
+
+O próximo teste deve gerar/instalar uma build com esse módulo, abrir o Chrome
+sem flags e verificar se deixam de aparecer `zygote-child`/`crash_dump64` e o
+timeout `browser_gpu_channel_host_factory.cc:49`. Se a ROM não iniciar ou
+outros serviços nativos falharem, remova o módulo `appzygote_compat` e repita
+o A/B; isso indicará que o fallback precisa ser limitado por pacote em vez de
+ser aplicado a todos os serviços native.
+
+O teste seguinte mostrou que misturar o `libc++.so` Android 33 do S20+ com o
+`liblog.so`/`libbase.so` Android 37 do r11s causava o símbolo ausente
+`_ZNSt3__122__libcpp_verbose_abortEPKcz`. O conjunto foi unificado no r11s
+para manter o ABI C++ consistente.
+
+A varredura recursiva dos 649 ELF32 presentes no `work_dir` também encontrou
+clientes vendor que precisavam de `android.frameworks.sensorservice@1.0.so`,
+`android.hardware.sensors@1.0.so`, `libGLESv3.so`, `libminijail.so` e
+`libcap.so`. A variante `source_apex` agora instala os três primeiros do
+firmware alvo e os dois últimos do donor r11s antes da validação WFD.
+
+## Correção do patch AppZygote para o Apktool 3.0.3-16 (2026-09-21)
+
+A primeira tentativa do `appzygote_compat` usava `v36`/`v37` e escrevia em
+`v18`. Embora esses registradores fossem válidos pelo total de `.locals`, o
+assembler desta versão do Apktool rejeita instruções não-range acima de `v15`.
+Isso causou o erro `maximum allowed register ... v15` durante a build de
+`services.jar`.
+
+O patch foi corrigido para usar somente `v14`/`v15` na leitura da propriedade.
+Quando `ro.unica.disable_app_zygote=true`, ele salta diretamente para
+`:cond_1f`, o caminho do zygote normal, sem sobrescrever `v18`; com a
+propriedade falsa, a decisão original de AppZygote permanece intacta.
+
+Validação concluída:
+
+1. `git apply --check` passou no `ProcessList.smali` decodificado.
+2. `git diff --check` passou.
+3. `java -Xmx2097m -jar out/tools/bin/apktool.jar b -j 1 .../services.jar`
+   concluiu com exit code 0 e gerou `dist/services.jar`.
+
+Ainda não houve flash nem validação no aparelho; a correção resolve o erro de
+smali da build, mas sua eficácia contra o crash do Chrome só pode ser medida
+após instalar uma ROM nova.
+
+## Backport `cgroup.kill` registrado no repositório do kernel (2026-09-21)
+
+O backport foi confirmado no kernel instalado e registrado no repositório
+`At30c/SSM_990v2BYEXTREME`:
+
+```text
+Commit: f645ea00fb89 cgroup: add cgroup.kill to legacy cgroup2
+Branch: main
+Remote: origin/main
+```
+
+O commit contém somente:
+
+```text
+include/linux/cgroup-defs.h
+kernel/cgroup/cgroup.c
+```
+
+O `cgroup.kill` foi deliberadamente marcado com `CFTYPE_NOT_ON_ROOT`, portanto
+o arquivo não aparece em `/sys/fs/cgroup/cgroup.kill`; ele aparece nos cgroups
+descendentes, por exemplo `/sys/fs/cgroup/apps/cgroup.kill`.
+
+Validação no aparelho após o flash:
+
+1. `/sys/fs/cgroup/apps/cgroup.kill` existe.
+2. `/sys/fs/cgroup/apps/cgroup.freeze` continua disponível.
+3. Um processo `sleep` foi movido para um cgroup temporário e terminou após
+   `printf 1 > cgroup.kill`.
+4. O cgroup temporário foi removido sem deixar resíduos.
+
+Os diretórios de build não foram incluídos no commit; apenas os dois arquivos
+do backport foram enviados ao repositório do kernel.
+
+## Teste da nova build: framework estabiliza, mas o native Chromium child continua falhando (2026-09-21 17:15–17:22)
+
+Na nova build instalada, o kernel confirmou novamente:
+
+```text
+4.19.325-cip119-st3-ExtremeKRNL-Nexus-v1+ #2
+/sys/fs/cgroup/apps/cgroup.kill: presente
+/sys/fs/cgroup/apps/cgroup.freeze: presente
+```
+
+O teste funcional de `cgroup.kill` continuou passando: um `sleep` temporário
+foi movido para um cgroup descartável e morreu após `printf 1 > cgroup.kill`.
+
+Chrome e Edge foram iniciados explicitamente com `am start`. Ambos mantiveram
+o processo principal e criaram a Activity, mas o processo nativo
+`NativeOnlySandboxedProcessService` falhou no mesmo ponto:
+
+```text
+zygote_next: zygote: Native Zygote: Exiting server
+libc: Fatal signal 6 (SIGABRT) ... (zygote-child)
+crash_dump64: failed to open /proc/<pid>: No such file or directory
+ActivityManager: Process ... NativeOnlySandboxedProcessService0 failed to attach
+```
+
+O padrão se repetiu para o Chrome e para o Edge, confirmando que é uma falha
+comum do caminho Chromium nativo, não de um APK específico. Não apareceu
+`Timed out waiting for GPU channel` nesta execução, e `system_server`, zygote64
+e zygote_next permaneceram vivos por mais de dez minutos; o patch do framework
+evitou a escalada anterior para SIGTRAP/soft-reboot, mas não corrigiu o child.
+
+Um A/B com SELinux permissivo não eliminou o `SIGABRT`; o teste foi restaurado
+para `Enforcing`. Os pais `zygote64` e `zygote_next` continuam com
+`CapEff=CapBnd=0x3fffffffff`, `NoNewPrivs=0` e `Seccomp=0`. Assim, o próximo
+alvo é a transição do child nativo para seccomp/capabilities em
+`zygote_next`; `cgroup.kill`, o aviso `SystemMemoryProcess` e a GPU ficam como
+efeitos secundários nesta fase.
+
+## Chrome abre após limpar dados, mas páginas não carregam (2026-09-21 17:25)
+
+Foi aberta uma URL real (`https://example.com`) após limpar os dados do Chrome.
+A conectividade do aparelho estava normal: Wi-Fi conectado, validado e com
+rota/DNS disponíveis. A `ChromeTabbedActivity` permaneceu em primeiro plano,
+mas o conteúdo não carregou.
+
+O log mostrou o motivo: ao tentar criar os renderers, o Chrome entrou em loop
+de `NativeOnlySandboxedProcessService0`. Cada tentativa gerou um novo UID
+isolado, iniciou o `zygote_next` e morreu imediatamente:
+
+```text
+ActivityManager: Start proc ... NativeOnlySandboxedProcessService0
+zygote_next: Native Zygote: Exiting server
+libc: Fatal signal 6 (SIGABRT) ... (zygote-child)
+crash_dump64: failed to open /proc/<pid>
+ActivityManager: Process ... failed to attach
+```
+
+Não houve erro de DNS/rede nem timeout de GPU nessa tentativa. Portanto,
+limpar os dados apenas permite que a Activity inicial seja criada; páginas
+dependem do renderer nativo, que continua incompatível com a cadeia
+`zygote_next`/seccomp/capabilities.
+
+## Correção da segunda seleção de `zygote_next` no `framework.jar` (2026-09-21)
+
+A investigação mostrou que o fallback anterior no `services.jar` não era
+suficiente. Ele evita a criação do `AppZygote`, mas `Process.start()` faz uma
+segunda decisão independente no `framework.jar`: quando
+`Flags.nativeFrameworkPrototype()` é verdadeiro e o bit `0x8` está presente
+em `runtimeFlags`, ele seleciona diretamente `NATIVE_ZYGOTE_PROCESS`. Na base
+Android 17 atual, `RELEASE_NATIVE_FRAMEWORK_PROTOTYPE` está habilitado; por
+isso os processos `NativeOnlySandboxedProcessService` ainda entravam em
+`zygote_next` depois de contornar o AppZygote.
+
+O módulo `unica/mods/appzygote_compat` foi atualizado para a versão 1.1. Ele
+agora aplica também
+`framework.jar/0001-Disable-native-zygote-on-legacy-vendor.patch` e define:
+
+```properties
+ro.unica.disable_app_zygote=true
+ro.unica.disable_native_zygote=true
+```
+
+Com a segunda propriedade ativa, `Process.start()` salta para o
+`ZYGOTE_PROCESS` Java regular antes de considerar o bit de processo nativo.
+Quando a propriedade está ausente ou falsa, o fluxo original permanece
+inalterado. O patch usa apenas `v1`/`v2`, que são sobrescritos pelo código
+original depois da escolha do zygote, evitando o limite de registradores que
+já causou falha no Apktool.
+
+Validações realizadas:
+
+1. `git apply --check` passou contra o `Process.smali` atualmente decodificado.
+2. O patch foi aplicado a uma cópia limpa do `framework.jar` decodificado.
+3. O Apktool `3.0.3-16-17254568-SNAPSHOT` recompilou todas as sete classes DEX
+   e gerou `dist/framework.jar` com exit code 0.
+4. `unzip -t` não encontrou erros no JAR remontado.
+5. `bash -n` e `git diff --check` passaram nos arquivos do módulo.
+
+O `services.jar` presente no `out` já continha o primeiro patch, o que também
+confirma que ele entrou na build anterior. A nova correção do `framework.jar`
+ainda não está no aparelho: é necessária uma nova build/instalação antes do
+teste funcional. Depois do flash, a evidência esperada é a ausência de
+`zygote_next: Native Zygote: Exiting server` ao abrir Chrome/Edge, seguida da
+criação estável dos renderers e carregamento de páginas. Se o filho ainda
+abortar, o log do novo caminho regular deve permitir separar a falha de
+especialização de uma falha interna do Chromium.
+
+## Módulo KernelSU para o teste AppZygote/zygote_next (2026-09-21)
+
+Foi gerado o módulo de teste específico para a build instalada:
+
+```text
+out/target/y2s/appzygote-compat-ksu-v1.1.zip
+SHA-256: b997c08c06a54730ef4a5315b51a1191ab4ba0dae5a7557a2ed345bbd702cceb
+```
+
+Antes de montar o módulo, os JARs locais e os do aparelho foram comparados. Os
+dois pares eram idênticos:
+
+```text
+framework.jar  8361ab40e2f9f4d98a595753054d311cc4bd019c243b111f6a970407af1185c6
+services.jar   373e210fc5d861d51c4ada3ddf8218034bea8dc4dbebc1716829bebc0ccc7e7b
+```
+
+O ZIP contém o `framework.jar` remontado com o novo patch, o `services.jar`
+já presente na build e as duas propriedades de fallback. O instalador recusa
+qualquer fingerprint ou hash diferente para impedir que um framework de outra
+build seja montado. O arquivo passou em `unzip -t`, os scripts passaram em
+`bash -n`, e a instalação pelo `ksud 3.3.0` confirmou os hashes-base.
+
+O primeiro reboot foi concluído normalmente, mas não constituiu teste do
+patch: `/system/framework/framework.jar` manteve o hash original e
+`ro.unica.disable_native_zygote` não foi criada. A inspeção mostrou o módulo
+em `modules_update`, com `update=true`, e nenhum link
+`/data/adb/metamodule`. Essa versão do KernelSU Next delega a montagem de
+arquivos de `/system` a um metamódulo; sem `meta-overlayfs`, Magic Mount ou
+equivalente, o diretório `system/` de módulos regulares não é sobreposto. O
+mesmo estado pendente também foi observado no ReZygisk já instalado.
+
+O módulo v1.1 ficou preparado no aparelho, mas ainda não está ativo. Instalar
+um metamódulo é uma mudança global: além deste teste, ativará outros módulos
+pendentes, incluindo ReZygisk. Portanto isso não foi feito automaticamente.
+Após escolher e instalar um backend de montagem compatível, reinicie e só
+considere o patch ativo se:
+
+```text
+sha256sum /system/framework/framework.jar
+0335d0adbb5e089d08eb0e695ec7dd34043fa99ecd094c497cd259ebf7d38538
+
+getprop ro.unica.disable_native_zygote
+true
+```
+
+## Resultado do A/B com o Zygote Java regular (2026-09-21 18:25)
+
+O Meta-Overlayfsx 1.3.4 foi instalado. Como a integração do KernelSU deste
+kernel não disparou `post-fs-data` automaticamente, o evento foi acionado uma
+vez pelo `ksud`. O metamódulo montou a imagem ext4 e sobrepôs os dois JARs sem
+conflitos. Antes do teste foram confirmados:
+
+```text
+/system/framework/framework.jar = 0335d0ad...d38538 (patch ativo)
+ro.unica.disable_app_zygote=true
+ro.unica.disable_native_zygote=true
+Overlayfsx: Modules Mounted: 1, File Conflicts: False
+```
+
+Após um soft reboot, o Chrome foi aberto com `https://example.com`. O desvio
+funcionou exatamente como implementado: os filhos apareceram com PPID do
+`zygote64` Java regular, não houve a sequência anterior de `SIGABRT`,
+`capset failed` ou falha do `crash_dump64`, e não houve tentativa funcional
+de iniciar o renderer através de `zygote_next`.
+
+Entretanto, o teste também provou que esse fallback não pode ser usado como
+solução. `NativeOnlySandboxedProcessService0` não possui uma classe Java
+carregável no APK base. Ao ser iniciado pelo Zygote Java, cada renderer morreu
+com:
+
+```text
+java.lang.RuntimeException: Unable to create service
+org.chromium.content.app.NativeOnlySandboxedProcessService0
+Caused by: java.lang.ClassNotFoundException: Didn't find class
+"org.chromium.content.app.NativeOnlySandboxedProcessService0"
+```
+
+Foram observadas 148 ocorrências desse `ClassNotFoundException` no teste. Isso
+confirma duas coisas: o patch realmente retirou os filhos do `zygote_next`,
+mas o Chromium atual depende obrigatoriamente do caminho Native Zygote para
+esses serviços. A correção definitiva deve manter `NATIVE_ZYGOTE_PROCESS` e
+corrigir sua especialização; redirecioná-lo para `ZYGOTE_PROCESS` apenas troca
+o abort nativo por uma falha determinística de carregamento Java.
+
+O módulo KernelSU `appzygote_compat_ksu` foi desabilitado e o aparelho foi
+reiniciado. O framework voltou ao hash original
+`8361ab40...1185c6`, a propriedade experimental deixou de existir e o boot
+foi concluído. Também foi adicionado `unica/mods/appzygote_compat/disable`
+para impedir que essa variante comprovadamente inválida entre em builds
+futuras. A captura completa está em
+`out/target/y2s/ksu-appzygote-test-20260921-1825/`.
+
+## Diagnóstico TRACE do Native Zygote (2026-09-21)
+
+Depois de confirmar que `NativeOnlySandboxedProcessService` não pode ser
+redirecionado ao Zygote Java, foi preparada uma variante que mantém o caminho
+nativo original e apenas aumenta a observabilidade. O novo módulo de
+plataforma está em:
+
+```text
+platform/exynos990/patches/zzzzz_zygote_next_trace/
+```
+
+Ele substitui somente `system/etc/init/zygote_next.rc`. Socket, usuário,
+grupo, prioridade, gatilho de inicialização e comportamento de restart foram
+preservados. A linha do serviço passou a usar:
+
+```text
+--log-level TRACE --trace-level TRACE
+```
+
+Também foi acrescentado `stdio_to_kmsg`. A ROM é `ro.debuggable=1` e já usa
+essa diretiva em outros serviços; assim, um panic Rust emitido em stderr pode
+ser preservado no buffer do kernel mesmo quando o filho morre antes de o
+`crash_dump64` anexar. O próprio binário `zygote_next --help` no aparelho
+confirmou suporte aos dois argumentos de nível de log.
+
+O código Android 17 confirma que, depois do último ponto atualmente visível
+(`cgroup::create`), o filho executa `set_cpuset_policy`, `set_sched_policy`,
+securebits/capabilities, seccomp, `setresuid` e a transição SELinux. O TRACE
+deve identificar em qual dessas fronteiras ocorre o panic, evitando outro
+patch comportamental por tentativa.
+
+O ReZygisk foi deixado `enabled=false` e seu marcador de remoção foi revertido;
+o módulo permanece instalado, mas não será executado no próximo boot. O módulo
+KernelSU `appzygote_compat_ksu` também continua desabilitado. O Meta-Overlayfsx
+permanece ativo apenas como backend de montagem.
+
+Validações realizadas:
+
+1. `zygote_next --help` confirmou `--log-level` e `--trace-level`.
+2. `stdio_to_kmsg` já é aceito pelos arquivos init da mesma imagem.
+3. A comparação com o RC original mostrou apenas comentários, níveis TRACE e
+   redirecionamento de stderr como diferenças.
+4. `git diff --check` passou.
+
+O patch ainda requer nova build/flash. No teste seguinte, capture `logcat -b
+all`, `dmesg` e eventos `zygote_next` desde antes de abrir o Chrome.
+
+## Módulo KernelSU de TRACE do Native Zygote (2026-09-21 18:55)
+
+Para testar a mesma instrumentação sem gerar outra ROM, foi criado e instalado
+o módulo KernelSU `zygote_next_trace_ksu` 1.1. O ZIP final está em:
+
+```text
+out/target/y2s/zygote-next-trace-ksu-v1.1.zip
+sha256 4319a9bb9a2ba06dee74983c42cebc0a6db75fdd8494044fe49d29d1228ea9ba
+```
+
+O módulo foi limitado ao binário `zygote_next` desta build. O instalador exige
+o SHA-256 original
+`b16225e7f4c41c5ebda007c2605ef831228bdbe8fff6a1392fae77e9dea47064`.
+Ele monta um wrapper ELF AArch64 estático, sem libc e sem abrir descritores,
+que preserva todos os argumentos do `init`, troca `INFO` por `TRACE`, acrescenta
+`--trace-level TRACE` e executa a cópia intacta em
+`/system/bin/zygote_next.real`. O código-fonte do wrapper e os arquivos de
+empacotamento permanecem em:
+
+```text
+out/target/y2s/zygote-next-trace-ksu-src/
+```
+
+O Meta-Overlayfsx inicialmente atribuiu `system_file` aos dois executáveis. A
+versão 1.1 corrige isso no `post-fs-data.sh`: o wrapper recebe novamente
+`zygote_next_exec`, preservando a transição stock `init` -> `zygote_next`, e a
+cópia real permanece `system_file`. A regra SELinux do módulo permite somente
+o segundo `exec` sem transição e o relabel necessário pelo domínio privado do
+KernelSU.
+
+Nesta integração do KernelSU, `post-fs-data` ainda não é disparado
+automaticamente. Depois do reboot o Android iniciou normalmente com o binário
+stock; foi necessário executar uma vez:
+
+```text
+su -c /data/adb/ksu/bin/ksud post-fs-data
+```
+
+Após isso, o overlay apresentou os hashes esperados, o serviço foi reiniciado
+isoladamente com `setprop ctl.restart zygote_next` e voltou saudável. A
+validação ao vivo confirmou:
+
+```text
+contexto: u:r:zygote_next:s0
+PID: 20818
+zygote.zygote_next.server_ready=true
+socket /dev/socket/zygote_next em LISTEN
+NoNewPrivs=0
+Seccomp=0
+argv: /system/bin/zygote_next --name zygote_next --species android-native-app
+      --log-level TRACE --arg-buf-padding ... --trace-level TRACE
+```
+
+Não houve falha de argumento, negação SELinux ou restart em loop. O módulo está
+instalado e habilitado; `appzygote_compat_ksu` e ReZygisk continuam
+desabilitados. O próximo passo é reproduzir a abertura do Chrome/Edge com
+`logcat -b all` e `dmesg` já capturando, agora que o Native Zygote realmente
+está emitindo TRACE.
+
+## Causa explícita do SIGABRT do Native Zygote (2026-09-21 19:03)
+
+Com o módulo TRACE ativo, o Chrome aberto reproduziu 18 aborts consecutivos de
+`NativeOnlySandboxedProcessService`; uma segunda abertura controlada reproduziu
+o mesmo padrão. Os artefatos completos estão em:
+
+```text
+out/target/y2s/native-zygote-trace-20260921-185847/
+```
+
+Além de `logcat -b all` e `dmesg`, foi feita uma captura ftrace dos eventos
+`raw_syscalls`, `sched_process_*` e `signal_*`, filtrada pelo PID 20818 do
+`zygote_next` e herdada pelos filhos. O tracing foi desligado e os filtros
+foram removidos após quatro segundos. O Chrome foi encerrado sem limpar seus
+dados para evitar que a repetição bloqueasse `system_server`; o aparelho
+permaneceu com `sys.boot_completed=1`, `system_server` PID 7602 e
+`zygote_next` PID 20818.
+
+O ftrace identificou o primeiro erro fatal de forma determinística. Em nove
+filhos conferidos, a especialização executou esta sequência:
+
+```text
+prctl(PR_CAPBSET_READ, 0..37) = 1
+prctl(PR_CAPBSET_DROP, 0..37) = 0
+prctl(PR_CAPBSET_READ, 38)    = -EINVAL
+write(2, ..., 145)            = 145
+rt_tgsigqueueinfo(..., SIGABRT, ...) = 0
+```
+
+Portanto, o abort não nasce no cgroup, na GPU, no `crash_dump64`, no seccomp
+nem em uma negação SELinux. O cgroup termina antes do erro; o primeiro retorno
+incompatível é a consulta da capability 38. O código Android 17 em
+`system/zygote/zygote/src/child_process.rs` percorre o complemento de
+`cap_bound` e usa `cap_within_bound(...).expect("Failed to check capability
+bound")`; o `EINVAL` do kernel vira panic e `SIGABRT`.
+
+O header do ExtremeKRNL confirma a incompatibilidade:
+
+```text
+include/uapi/linux/capability.h:
+CAP_AUDIT_READ = 37
+CAP_LAST_CAP   = CAP_AUDIT_READ
+```
+
+O userspace do Android 17 foi compilado com as capabilities modernas:
+
+```text
+CAP_PERFMON            = 38
+CAP_BPF                = 39
+CAP_CHECKPOINT_RESTORE = 40
+CAP_LAST_CAP            = CAP_CHECKPOINT_RESTORE
+```
+
+O código AOSP usado para a comparação foi o branch oficial
+`android17-release`, commit
+`c24023080df0bdb5988c1e0c641d494574a97c40`. A árvore local também confirma
+que o `init` moderno exige por `static_assert` que `CAP_LAST_CAP` seja
+`CAP_CHECKPOINT_RESTORE`.
+
+O spam do `crash_dump64` é consequência: o filho já iniciou o handler do
+`SIGABRT` e desaparece antes de o helper abrir `/proc/<pid>`. O próximo patch
+deve backportar ao kernel 4.19 a ABI das capabilities 38–40, incluindo os nomes
+correspondentes em `COMMON_CAP2_PERMS` do SELinux. Apenas silenciar o panic ou
+o helper esconderia a incompatibilidade sem corrigi-la.
+
+## Backport da ABI de capabilities exigida pelo Android 17 (2026-09-21 21:31)
+
+Foi criado o patch do ExtremeKRNL:
+
+```text
+platform/exynos990/patches/extremekrnl/patches/0003-capabilities-add-android17-bounding-set-abi.patch
+```
+
+O autor registrado no patch é `At30c <PabloAtsoc9993@outlook.com>`. O patch
+adiciona ao kernel 4.19 os números de ABI de `CAP_PERFMON` (38), `CAP_BPF` (39)
+e `CAP_CHECKPOINT_RESTORE` (40), eleva `CAP_LAST_CAP` para 40 e acrescenta os
+três nomes em `COMMON_CAP2_PERMS` do SELinux. A numeração e os nomes seguem o
+Linux upstream v5.9. Isto faz `PR_CAPBSET_READ` e `PR_CAPBSET_DROP` reconhecerem
+os bits consultados pelo Native Zygote do Android 17; não afirma implementar as
+funcionalidades modernas de perf, BPF ou checkpoint/restore associadas a essas
+capabilities.
+
+O `customize.sh` do ExtremeKRNL aplica automaticamente todos os arquivos
+`patches/*.patch`, portanto o novo patch já entra no fluxo normal e também na
+chave do cache do kernel. As validações realizadas foram:
+
+```text
+git apply --check: aprovado antes da aplicação
+git apply --reverse --check: aprovado depois da aplicação
+kernel/capability.o: compilado
+security/commoncap.o: compilado
+security/selinux/avc.o: compilado
+kernel/sysctl.o: compilado
+Image completo: compilado e linkado com sucesso
+```
+
+O gerador do SELinux produziu também os novos bits esperados:
+
+```text
+CAPABILITY2__PERFMON            0x00000040U
+CAPABILITY2__BPF                0x00000080U
+CAPABILITY2__CHECKPOINT_RESTORE 0x00000100U
+```
+
+O artefato usado para a validação local foi:
+
+```text
+out/kernel_tmp-exynos990/out/arch/arm64/boot/Image
+tamanho: 43241488 bytes
+sha256: c7d11a613258a3568b2e2c534ce2db3c0974d7f9d6f15232be19d2cdb6791b84
+```
+
+Esta etapa comprova aplicação, compilação e integração do patch, mas ainda não
+comprova o comportamento em execução. É necessário gerar/instalar uma build
+que contenha esse kernel e repetir a abertura do Chrome/Edge. O resultado
+esperado no ftrace é que as consultas 38, 39 e 40 deixem de retornar `-EINVAL`;
+o kernel deve publicar `CAP_LAST_CAP=40`, permitindo que o laço do zygote
+termine normalmente sem `SIGABRT`. O número 41 é apenas o primeiro índice fora
+da ABI e não precisa ser consultado pelo zygote.
+
+### Validação no aparelho (2026-09-21)
+
+A build contendo o backport foi instalada e o Chrome voltou a funcionar. Isso
+confirma em execução que a causa do abort do `zygote-child` era a ABI incompleta
+de capabilities do kernel 4.19: o Android 17 consultava `CAP_PERFMON` (38), mas
+o kernel anterior encerrava em `CAP_AUDIT_READ` (37) e devolvia `-EINVAL`.
+O patch `0003-capabilities-add-android17-bounding-set-abi.patch` deve permanecer na
+configuração de produção. Os módulos `appzygote_compat` e
+`zzzzz_zygote_next_trace` continuam sendo apenas tentativas/instrumentação de
+diagnóstico e podem ser retirados depois de uma última validação sem TRACE.

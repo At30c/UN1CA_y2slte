@@ -68,22 +68,25 @@ INIT_KERNEL_SUBMODULES()
 APPLY_KERNEL_PATCHES()
 {
     local PATCH_DIR="$SRC_DIR/platform/exynos990/patches/extremekrnl/patches"
-    local PATCH="$PATCH_DIR/0001-accept-memory-recursiveprot-on-legacy-cgroup2.patch"
+    local PATCH
+    local PATCHES=("$PATCH_DIR"/*.patch)
 
-    if [ ! -f "$PATCH" ]; then
-        ABORT "Kernel compatibility patch not found: ${PATCH//$SRC_DIR\//}"
+    if [ ! -e "${PATCHES[0]}" ]; then
+        ABORT "No kernel compatibility patches found: ${PATCH_DIR//$SRC_DIR\//}"
         return 1
     fi
 
-    if git -C "$KERNEL_TMP_DIR" apply --check "$PATCH" > /dev/null 2>&1; then
-        LOG "- Applying cgroup2 compatibility patch"
-        EVAL "git -C \"$KERNEL_TMP_DIR\" apply \"$PATCH\""
-    elif git -C "$KERNEL_TMP_DIR" apply --reverse --check "$PATCH" > /dev/null 2>&1; then
-        LOG "- cgroup2 compatibility patch is already applied"
-    else
-        ABORT "Could not apply cgroup2 compatibility patch to the ExtremeKRNL source."
-        return 1
-    fi
+    for PATCH in "${PATCHES[@]}"; do
+        if git -C "$KERNEL_TMP_DIR" apply --check "$PATCH" > /dev/null 2>&1; then
+            LOG "- Applying kernel compatibility patch: $(basename "$PATCH")"
+            EVAL "git -C \"$KERNEL_TMP_DIR\" apply \"$PATCH\""
+        elif git -C "$KERNEL_TMP_DIR" apply --reverse --check "$PATCH" > /dev/null 2>&1; then
+            LOG "- Kernel compatibility patch already applied: $(basename "$PATCH")"
+        else
+            ABORT "Could not apply kernel compatibility patch $(basename "$PATCH") to the ExtremeKRNL source."
+            return 1
+        fi
+    done
 }
 
 SAFE_PULL_CHANGES()
