@@ -5,6 +5,86 @@ if [ "$SOURCE_PLATFORM_SDK_VERSION" -lt 36 ]; then
     return 0
 fi
 
+EXYNOS990_RUNTIME32_APEX_MODE="${EXYNOS990_RUNTIME32_APEX_MODE:-merged}"
+case "$EXYNOS990_RUNTIME32_APEX_MODE" in
+    merged|source_apex)
+        ;;
+    *)
+        LOGE "Invalid EXYNOS990_RUNTIME32_APEX_MODE: $EXYNOS990_RUNTIME32_APEX_MODE"
+        return 1
+        ;;
+esac
+
+INSTALL_DESIX_RUNTIME32_STANDALONE()
+{
+    local DONOR_APEX="$SRC_DIR/prebuilts/samsung/r11sxxx/system/apex/com.android.runtime.apex"
+    local RUNTIME_ROOT="$TMP_DIR/desixtification-runtime32-standalone"
+    local DECODED="$RUNTIME_ROOT/donor"
+    local MOUNT_DIR="$RUNTIME_ROOT/mnt"
+    local BIONIC_LIB
+    local DEST
+    local RUNTIME_LINKER_FOUND=false
+
+    [ -f "$DONOR_APEX" ] || {
+        LOGE "Missing r11s Runtime APEX for standalone ARM32 compatibility"
+        return 1
+    }
+    if ! sudo -n -v &> /dev/null && ! sudo -v; then
+        LOGE "Root permissions are required to extract the ARM32 Runtime payload"
+        return 1
+    fi
+
+    sudo rm -rf "$RUNTIME_ROOT"
+    mkdir -p "$RUNTIME_ROOT" "$MOUNT_DIR"
+    LOG "- Extracting standalone ARM32 linker/Bionic from r11s Runtime"
+    EVAL "apktool d -j \"$(nproc)\" -o \"$DECODED\" -r \"$DONOR_APEX\""
+    sudo mount -o ro "$DECODED/unknown/apex_payload.img" "$MOUNT_DIR" || return 1
+
+    mkdir -p "$WORK_DIR/system/system/bin" "$WORK_DIR/system/system/lib"
+    for DEST in linker linker_asan; do
+        if [ -e "$MOUNT_DIR/bin/$DEST" ] || [ -L "$MOUNT_DIR/bin/$DEST" ]; then
+            [ "$DEST" = "linker" ] && RUNTIME_LINKER_FOUND=true
+            sudo cp -a "$MOUNT_DIR/bin/$DEST" "$WORK_DIR/system/system/bin/$DEST" || {
+                sudo umount "$MOUNT_DIR" || true
+                return 1
+            }
+            sudo chown -h "$(id -u):$(id -g)" "$WORK_DIR/system/system/bin/$DEST"
+            SET_METADATA "system" "system/bin/$DEST" 0 2000 755 \
+                "u:object_r:system_linker_exec:s0" || {
+                    sudo umount "$MOUNT_DIR" || true
+                    return 1
+                }
+        fi
+    done
+    if ! $RUNTIME_LINKER_FOUND; then
+        sudo umount "$MOUNT_DIR" || true
+        LOGE "r11s Runtime APEX lacks the ARM32 linker"
+        return 1
+    fi
+
+    for BIONIC_LIB in libc.so libdl.so libdl_android.so libm.so; do
+        if [ ! -f "$MOUNT_DIR/lib/bionic/$BIONIC_LIB" ]; then
+            sudo umount "$MOUNT_DIR" || true
+            LOGE "r11s Runtime APEX lacks ARM32 Bionic $BIONIC_LIB"
+            return 1
+        fi
+        sudo cp -a "$MOUNT_DIR/lib/bionic/$BIONIC_LIB" \
+            "$WORK_DIR/system/system/lib/$BIONIC_LIB" || {
+                sudo umount "$MOUNT_DIR" || true
+                return 1
+            }
+        sudo chown -h "$(id -u):$(id -g)" "$WORK_DIR/system/system/lib/$BIONIC_LIB"
+        SET_METADATA "system" "system/lib/$BIONIC_LIB" 0 0 644 \
+            "u:object_r:system_lib_file:s0" || {
+                sudo umount "$MOUNT_DIR" || true
+                return 1
+            }
+    done
+    sudo umount "$MOUNT_DIR" || return 1
+    rm -rf "$RUNTIME_ROOT"
+}
+
+if [ "$EXYNOS990_RUNTIME32_APEX_MODE" = "merged" ]; then
 LOG_STEP_IN "- Adding S23 FE ARM32 libraries and runtime"
 
 # ADD_TO_WORK_DIR can infer metadata for individual files, but a recursive
@@ -172,6 +252,33 @@ for DESIX_LINK in libc.so libdl.so libdl_android.so libm.so; do
     SET_METADATA "system" "system/lib/$DESIX_LINK" 0 0 644 "u:object_r:system_lib_file:s0" || return 1
 done
 LOG_STEP_OUT
+else
+    # Keep the source S24+ Runtime/I18n/ART APEXes and do not add the donor
+    # ARM32 linker or Bionic links.  A small non-Bionic exception is kept for
+    # the later WFD compatibility module, which patches this library directly.
+    # This is an A/B diagnostic variant for the Chromium/AppZygote crash; all
+    # property fixes below remain active so the comparison is limited to the
+    # runtime payload rather than an unrelated missing build input.
+    LOG "- Source APEX test mode: preserving S24+ Runtime/I18n/ART APEXes"
+    INSTALL_DESIX_RUNTIME32_STANDALONE || return 1
+    # These target-side 32-bit framework libraries are referenced by vendor
+    # sensor/GPU/minijail clients. Keep their ABI paired with the S20+ vendor;
+    # libminijail/libcap are only available in the r11s ARM32 donor.
+    for DESIX_TARGET_LIB in \
+        android.frameworks.sensorservice@1.0.so \
+        android.hardware.sensors@1.0.so \
+        libGLESv3.so; do
+        ADD_TO_WORK_DIR "$TARGET_FIRMWARE" "system" \
+            "system/lib/$DESIX_TARGET_LIB" 0 0 644 \
+            "u:object_r:system_lib_file:s0" || return 1
+    done
+    ADD_TO_WORK_DIR "r11sxxx" "system" "system/lib/libminijail.so" \
+        0 0 644 "u:object_r:system_lib_file:s0" || return 1
+    ADD_TO_WORK_DIR "r11sxxx" "system" "system/lib/libcap.so" \
+        0 0 644 "u:object_r:system_lib_file:s0" || return 1
+    ADD_TO_WORK_DIR "r11sxxx" "system" "system/lib/libstagefright.so" \
+        0 0 644 "u:object_r:system_lib_file:s0" || return 1
+fi
 
 SET_PROP "vendor" "ro.vendor.product.cpu.abilist" "arm64-v8a"
 SET_PROP "vendor" "ro.vendor.product.cpu.abilist32" ""
@@ -184,5 +291,7 @@ SET_PROP "vendor" "dalvik.vm.dex2oat64.enabled" "true"
 SET_PROP "system" "persist.sys.disable_rescue" "true"
 SET_PROP "system" "ro.debuggable" "1"
 SET_PROP "system" "ro.adb.secure" "0"
-unset DESIX_LINK DESIX_LIB_CONTEXT DESIX_LIB_ENTRY DESIX_LIB_MODE DESIX_LIB_PATH DESIX_LIB_ROOT
+unset DESIX_LINK DESIX_LIB_CONTEXT DESIX_LIB_ENTRY DESIX_LIB_MODE DESIX_LIB_PATH \
+    DESIX_LIB_ROOT DESIX_TARGET_LIB
 unset -f MERGE_DESIX_APEX_ARM32
+unset -f INSTALL_DESIX_RUNTIME32_STANDALONE

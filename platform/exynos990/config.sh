@@ -6,6 +6,11 @@
 TARGET_BOARD_API_LEVEL=30
 TARGET_PRODUCT_SHIPPING_API_LEVEL=29
 
+# Runtime APEX compatibility variant.  The platform defaults to "source_apex"
+# so the S24+ Runtime/I18n/ART APEXes remain untouched.  Set this to "merged"
+# only when the legacy r11s ARM32 payload is intentionally required.
+EXYNOS990_RUNTIME32_APEX_MODE="${EXYNOS990_RUNTIME32_APEX_MODE:-source_apex}"
+
 # Partitions
 TARGET_BOOT_PARTITION_SIZE=67108864
 TARGET_DTBO_PARTITION_SIZE=8388608

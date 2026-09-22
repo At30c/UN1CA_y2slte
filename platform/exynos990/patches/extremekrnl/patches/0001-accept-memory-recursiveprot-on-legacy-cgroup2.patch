@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: UN1CA maintainers <maintainers@unica.dev>
+From: At30c <PabloAtsoc9993@outlook.com>
 Date: Sun, 20 Sep 2026 02:30:00 -0300
 Subject: [PATCH] cgroup: port recursive memory protection to legacy cgroup2
 
@@ -157,4 +157,3 @@ index f36d078b0997..3af6709f8aa1 100644
  
  exit:
  	memcg->memory.emin = emin;
-

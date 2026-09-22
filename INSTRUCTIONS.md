@@ -2773,3 +2773,29 @@ do kernel. Quando o build usar o kernel a partir de `50782bcd1df5`, o
 `customize.sh` detectará que o patch já foi aplicado e não o duplicará. Os
 diretórios gerados `build/out`, `out` e `toolchain/clang_14` não foram incluídos
 no commit do kernel.
+
+## Correções preparadas para publicação (2026-09-22)
+
+Foram validadas e preparadas para envio as correções de compatibilidade que
+estavam no working tree:
+
+- `__desixtification`: seleção explícita entre os APEXes Runtime de origem e o
+  payload ARM32 legado, com linker/Bionic standalone e dependências mínimas.
+- `cgroup_legacy`: descritores cgroup/task profiles compatíveis com a base S24+,
+  `CgroupKill`, `libcgrouprc`/dependências coerentes e remoção do
+  `vendor/lib64/libchrome.so` doador.
+- `zzzz_wfd_compat`: resolução recursiva das dependências ARM32 entre os
+  doadores r9s/r11s e validação ELF sem correções manuais biblioteca por
+  biblioteca.
+- `config.sh` e `gen_config_file.sh`: propagação de
+  `EXYNOS990_RUNTIME32_APEX_MODE` para reproduzir a variante de runtime usada
+  no teste do Chromium.
+- Cabeçalhos `From:` dos patches corrigidos para `At30c
+  <PabloAtsoc9993@outlook.com>`, conforme a autoria solicitada.
+- O patch `platform/exynos990/patches/extremekrnl/patches/0002-cgroup2-add-cgroup-kill-interface.patch`
+  foi incluído no conjunto de compatibilidade do kernel.
+
+As validações locais foram `bash -n` nos scripts alterados e `git diff --check`.
+Os módulos `unica/mods/appzygote_compat`, `zzzzz_zygote_next_trace` e
+`scripts/capture_logcat_tmux.sh` permanecem fora deste envio por serem
+diagnósticos/experimentais, não correções confirmadas.

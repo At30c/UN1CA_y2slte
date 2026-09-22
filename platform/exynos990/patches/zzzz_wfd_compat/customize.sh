@@ -91,26 +91,47 @@ while IFS= read -r R9S_WFD_64_LIB; do
     DELETE_FROM_WORK_DIR "system" "system/lib64/$R9S_WFD_64_LIB"
 done <<< "$R9S_WFD_64_REMOVE"
 
-# Resolve the framework-side WFD roots recursively from the Android 16 r11s
-# multilib donor. Libraries already supplied by runtime32_compat are reused.
-declare -A R11S_WFD_IMPORTED=()
+# Resolve the framework-side WFD roots recursively from the Android 16 donors.
+# Libraries already supplied by another WFD donor are reused, while missing
+# dependencies can fall back between r9s and r11s.
+declare -A WFD_IMPORTED=()
 
 ADD_R11S_WFD_LIB()
 {
     local LIB_NAME="$1"
-    local DONOR_LIB="$SRC_DIR/prebuilts/samsung/r11sxxx/system/lib/$LIB_NAME"
+    local RESOLVE_EXISTING="${2:-false}"
+    local PREFERRED_DONOR="${3:-r11sxxx}"
+    local DONOR="$PREFERRED_DONOR"
+    local DONOR_LIB
     local NEEDED_LIB
 
-    [ "${R11S_WFD_IMPORTED[$LIB_NAME]+set}" ] && return 0
-    R11S_WFD_IMPORTED["$LIB_NAME"]=1
-    [ -e "$WORK_DIR/system/system/lib/$LIB_NAME" ] && return 0
+    if [ "${WFD_IMPORTED[$LIB_NAME]+set}" ]; then
+        # A previous traversal may have seen a cyclic dependency before the
+        # file was installed. Do not let that stale mark hide a missing ELF.
+        [ -e "$WORK_DIR/system/system/lib/$LIB_NAME" ] && return 0
+        unset 'WFD_IMPORTED[$LIB_NAME]'
+    fi
+    WFD_IMPORTED["$LIB_NAME"]=1
+    DONOR_LIB="$SRC_DIR/prebuilts/samsung/$DONOR/system/lib/$LIB_NAME"
+    if [ ! -f "$DONOR_LIB" ]; then
+        for DONOR in r11sxxx r9sxxx; do
+            DONOR_LIB="$SRC_DIR/prebuilts/samsung/$DONOR/system/lib/$LIB_NAME"
+            [ -f "$DONOR_LIB" ] && break
+        done
+    fi
+    if [ -e "$WORK_DIR/system/system/lib/$LIB_NAME" ] && \
+            [ "$RESOLVE_EXISTING" != "true" ]; then
+        return 0
+    fi
 
     if [ ! -f "$DONOR_LIB" ]; then
-        ABORT "Missing r11s ARM32 WFD dependency: system/lib/$LIB_NAME"
+        ABORT "Missing ARM32 WFD dependency in r9s/r11s donors: system/lib/$LIB_NAME"
         return 1
     fi
-    ADD_TO_WORK_DIR "r11sxxx" "system" "system/lib/$LIB_NAME" \
-        0 0 644 "u:object_r:system_lib_file:s0" || return 1
+    if [ ! -e "$WORK_DIR/system/system/lib/$LIB_NAME" ]; then
+        ADD_TO_WORK_DIR "$DONOR" "system" "system/lib/$LIB_NAME" \
+            0 0 644 "u:object_r:system_lib_file:s0" || return 1
+    fi
 
     while read -r NEEDED_LIB; do
         case "$NEEDED_LIB" in
@@ -122,6 +143,23 @@ ADD_R11S_WFD_LIB()
     done < <(readelf -d "$DONOR_LIB" 2>/dev/null | \
         sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p')
 }
+
+# Resolve dependencies of every explicitly imported r9s WFD library. This
+# catches cross-donor requirements such as r9s libhdcp2 -> r11s libion before
+# the strict ELF validation stage.
+if [[ "${EXYNOS990_RUNTIME32_APEX_MODE:-merged}" == "source_apex" ]]; then
+    while IFS= read -r R9S_WFD_LIB; do
+        [ "$R9S_WFD_LIB" ] || continue
+        ADD_R11S_WFD_LIB "$R9S_WFD_LIB" true r9sxxx || return 1
+    done <<< "$R9S_WFD_LIBS"
+fi
+
+# source_apex keeps only a targeted stagefright input from r11s. Resolve its
+# non-Bionic DT_NEEDED closure as well, otherwise the strict graph validation
+# below reports the first missing dependency one library at a time.
+if [[ "${EXYNOS990_RUNTIME32_APEX_MODE:-merged}" == "source_apex" ]]; then
+    ADD_R11S_WFD_LIB "libstagefright.so" true || return 1
+fi
 
 for WFD_RUNTIME_ROOT in libsfextcp.so libinput.so libmemunreachable.so; do
     ADD_R11S_WFD_LIB "$WFD_RUNTIME_ROOT" || return 1
@@ -157,6 +195,13 @@ VALIDATE_ARM32_WFD_ELF()
         esac
         NEEDED_PATH="$WORK_DIR/system/system/lib/$NEEDED_LIB"
         if [ ! -f "$NEEDED_PATH" ]; then
+            # Resolve from either donor at the validation boundary as well.
+            # This makes the check self-healing and prevents one omitted root
+            # from turning a large dependency graph into repeated build/fail
+            # cycles.
+            ADD_R11S_WFD_LIB "$NEEDED_LIB" true || return 1
+        fi
+        if [ ! -f "$NEEDED_PATH" ]; then
             ABORT "$ELF_NAME requires missing ARM32 library: $NEEDED_LIB"
             return 1
         fi
@@ -170,7 +215,7 @@ VALIDATE_ARM32_WFD_ELF \
 LOG "  - ARM32 RemoteDisplay dependency graph validated"
 
 unset R9S_WFD_LIBS R9S_WFD_LIB R9S_WFD_64_REMOVE R9S_WFD_64_LIB \
-    WFD_RUNTIME_ROOT R11S_WFD_IMPORTED ARM32_WFD_VALIDATED
+    WFD_RUNTIME_ROOT WFD_IMPORTED ARM32_WFD_VALIDATED
 unset -f ADD_R11S_WFD_LIB VALIDATE_ARM32_WFD_ELF
 
 LOG_STEP_OUT

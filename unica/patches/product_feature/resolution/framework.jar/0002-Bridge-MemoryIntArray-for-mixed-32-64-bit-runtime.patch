@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: UN1CA y2slte maintainers <noreply@localhost>
+From: At30c <PabloAtsoc9993@outlook.com>
 Date: Tue, 1 Sep 2026 08:10:00 -0300
 Subject: [PATCH] Bridge MemoryIntArray for mixed 32/64-bit runtime
 

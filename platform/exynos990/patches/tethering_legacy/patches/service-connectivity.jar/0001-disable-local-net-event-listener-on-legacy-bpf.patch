@@ -1,5 +1,5 @@
 From 4bbf5d5e53c72e6b7e4e6d98f37cf2b1bfb6a3a1 Mon Sep 17 00:00:00 2001
-From: UN1CA Maintainers <maintainers@unica.example>
+From: At30c <PabloAtsoc9993@outlook.com>
 Date: Wed, 16 Sep 2026 22:00:00 -0300
 Subject: [PATCH] Disable local net event listener on legacy BPF kernels
 

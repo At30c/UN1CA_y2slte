@@ -1,6 +1,6 @@
 id=cgroup_legacy
-name=One UI 8.5 cgroup compatibility for Exynos 990
-version=1.0
-versionCode=1
+name=Source-compatible cgroup configuration for Exynos 990
+version=2.2
+versionCode=4
 author=miguelbarretoo
-description=Aligns the Android 16+ cgroup userspace (cgroups.json, task_profiles.json, lib64/libcgrouprc.so) with the One UI 8.5 S24+ donor so zygote process specialization matches the Exynos 990 cgroup v2 kernel layout, and enables the v2 memory controller at boot (cgroupmem.rc) so SystemMemoryProcess joins are satisfiable.
+description=Uses the S24+ compatible cgroup descriptors with the target's available legacy groups, preserves the source libcgrouprc/libchrome ABI, activates memory-v2 at boot, exposes cgroup.kill, and removes unrelated donor Chromium libraries.

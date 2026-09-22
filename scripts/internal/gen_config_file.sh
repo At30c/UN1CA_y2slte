@@ -486,6 +486,7 @@ fi
     GET_BUILD_VAR "TARGET_NAME"
     GET_BUILD_VAR "TARGET_CODENAME"
     GET_BUILD_VAR "TARGET_PLATFORM" "none"
+    GET_BUILD_VAR "EXYNOS990_RUNTIME32_APEX_MODE" "source_apex"
     if [ "${#TARGET_ASSERT_MODEL[@]}" -ge 1 ]; then
         echo "TARGET_ASSERT_MODEL=\"$(IFS=":"; printf '%s' "${TARGET_ASSERT_MODEL[*]}")\""
     else
