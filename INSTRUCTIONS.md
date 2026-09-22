@@ -2605,6 +2605,152 @@ configuração de produção. Os módulos `appzygote_compat` e
 `zzzzz_zygote_next_trace` continuam sendo apenas tentativas/instrumentação de
 diagnóstico e podem ser retirados depois de uma última validação sem TRACE.
 
+## Captura para diagnóstico de vídeo Telegram/Discord (2026-09-21 22:54)
+
+O aparelho estava desconectado e a sessão anterior do tmux não estava ativa.
+O script persistente foi restaurado em:
+
+```text
+scripts/capture_logcat_tmux.sh
+```
+
+A sessão destacada foi iniciada novamente:
+
+```text
+tmux attach -t y2s-logcat
+tmux capture-pane -pt y2s-logcat:0 -S -40
+```
+
+Ela permanece aguardando o ADB e cria um diretório
+`out/target/y2s/boot-diagnostics-<data>` quando o aparelho voltar a aparecer.
+Cada conexão recebe um marcador `DEVICE_CONNECTED_<data>` e todos os buffers
+do logcat são capturados até a desconexão. O script passou em `bash -n` e não
+limpa o buffer anterior, para preservar o primeiro erro ao reproduzir a falha
+de reprodução de vídeo nos aplicativos Telegram e Discord.
+
+Em 2026-09-21 23:00 o script foi corrigido para usar `tee`: o mesmo fluxo agora
+aparece ao vivo no painel do tmux e continua sendo salvo em `logcat.txt`. A
+sessão foi reiniciada e confirmou a exibição de eventos atuais do aparelho.
+
+### Diagnóstico do vídeo Telegram/Discord: geração de buffers (2026-09-21)
+
+O log persistente confirmou que o decoder Exynos inicia normalmente e que a
+alocação Mali também é concluída. A falha só aparece quando o `ACodec` troca a
+Surface: `BufferQueueProducer` rejeita o buffer reutilizado com `-22` porque a
+geração do buffer antigo não coincide com a geração nova da fila:
+
+```text
+[OMX.Exynos.avc.dec] setting surface generation to 11550745
+BufferQueueProducer: attachBuffer: generation number mismatch [buffer 0] [queue 11550745]
+ACodec: failed to attach buffer ... Invalid argument (22)
+MediaCodec.native_setSurface
+ExoPlayerImplInternal: Playback error
+```
+
+A análise do `libgui.so` do S926B encontrou a causa no
+`android::Surface::attachBuffer`: o binário importado só copia
+`mGenerationNumber` para o `GraphicBuffer` quando `mSharedBufferMode` está
+ativo. O vídeo usa buffers comuns, portanto o buffer chega à checagem de
+`BufferQueueProducer::attachBuffer` com a geração antiga. A checagem da fila
+não foi removida; ela deve continuar protegendo buffers de outra geração.
+
+Foi preparado o módulo `unica/mods/zzzz_surface_generation_compat`, que altera
+somente duas sequências ARM64 do `libgui.so` do S926B: torna incondicional a
+cópia em `Surface::attachBuffer()` e mantém a geração local atualizada em
+`Surface::setGenerationNumber()`. As sequências originais e substitutas foram
+validadas por desmontagem; em ambos os casos apenas o salto condicional vira
+`nop`, sem remover a checagem de geração do `BufferQueueProducer`.
+
+O primeiro A/B foi testado no aparelho por bind-mount temporário, com reinício do
+zygote e reprodução controlada no Telegram via scrcpy. O `libgui.so` alterado
+foi carregado, mas o log continuou mostrando `generation number mismatch`
+seguido de `MediaCodec.native_setSurface`/`Playback error`; portanto o primeiro
+bypass não é uma correção suficiente e não deve ser incorporado à build ainda.
+
+Também foi testada uma segunda variante temporária, que tornava incondicional
+a atualização em `Surface::setGenerationNumber` além da escrita em
+`Surface::attachBuffer`. Mesmo com as duas alterações, o log de 23:41:42
+continuou rejeitando o buffer pela geração da fila. Isso descarta a hipótese
+de que apenas essas duas escritas condicionais sejam a causa. Uma terceira
+variante, que neutralizava a checagem de geração dentro de
+`BufferQueueProducer::attachBuffer`, foi usada inicialmente somente como
+diagnóstico; o bind-mount foi removido com reboot completo e o hash de
+`libgui.so` retornou ao original. Na captura de 2026-09-22, porém, o módulo de
+duas escritas já estava efetivamente carregado e o mesmo erro continuou
+ocorrendo. Isso confirmou que a rejeição acontece no produtor, depois de
+`Surface::setOutputSurface`, e não apenas nas escritas locais de `Surface`.
+
+Por solicitação, a variante do produtor foi incorporada ao módulo, com versão
+1.1. Ela altera somente a sequência ARM64 de
+`BufferQueueProducer::attachBuffer` que compara
+`GraphicBuffer::mGenerationNumber` com a geração da fila:
+
+```text
+09c841b908e540b91f01096be1190054
+ ->
+09c841b908e540b91f01096b1f2003d5
+```
+
+A comparação permanece no binário para facilitar diagnóstico, mas o `b.ne`
+que retornava `-EINVAL` (`generation number mismatch`) vira `nop`. As demais
+validações de slot, fence, fila e conexão continuam intactas. Esta é uma
+compatibilidade específica para o buffer de vídeo reutilizado que chega com
+geração 0; ainda não é evidência de que o comportamento seja seguro para todos
+os produtores.
+
+Validações locais realizadas:
+
+1. A sequência original aparece exatamente uma vez no `libgui.so` da build.
+2. A substituição mantém o mesmo tamanho e o resultado continua sendo um ELF
+   AArch64 válido.
+3. `bash -n` e `git diff --check` passaram.
+
+Ainda é necessário gerar/instalar uma build com o módulo 1.1 e repetir o vídeo
+do Telegram/Discord. O sucesso esperado é o desaparecimento conjunto de
+`generation number mismatch`, `attachBuffer ... (-22)` e
+`MediaCodec.native_setSurface`; se surgir corrupção, soft-reboot ou erro de
+fence, o patch deve ser revertido e a solução deve voltar para uma troca de
+surface sem reutilização de `setOutputSurface`.
+
+### Causa do retorno `-22` no caminho ACodec
+
+O retorno não é um erro aleatório do driver. O fluxo AOSP é explícito:
+
+1. `MediaCodec::connectToSurface()` escolhe uma geração nova, chama
+   `surface->setGenerationNumber()` e desconecta/reconecta a surface para
+   descartar buffers livres antigos.
+2. O caminho legado `ACodec::handleSetSurface()` percorre os buffers de saída
+   já registrados e chama `surface->attachBuffer()` para reanexá-los à nova
+   surface.
+3. `BufferQueueProducer::attachBuffer()` compara a geração do
+   `GraphicBuffer` com a geração atual da fila e retorna `BAD_VALUE` (`-22`)
+   quando elas diferem.
+
+No log, a sequência observada é exatamente essa: o decoder define `15191042`,
+mas o buffer reanexado ainda informa `0`. Portanto, a incompatibilidade está
+na propagação da geração durante a migração de buffers entre surfaces no
+`libgui`/`ACodec` importado, e não no codec AVC, no gralloc ou no cgroup. A
+implementação de referência pode ser conferida em:
+
+```text
+frameworks/native/libs/gui/BufferQueueProducer.cpp::attachBuffer
+frameworks/av/media/libstagefright/ACodec.cpp::handleSetSurface
+```
+
+O módulo 1.1 continua sendo uma hipótese de compatibilidade para confirmar o
+diagnóstico. A correção definitiva deve sincronizar a geração do
+`GraphicBuffer` no caminho `ACodec`/`Surface` antes do `attachBuffer`, mantendo
+a validação do produtor, em vez de simplesmente ignorar a divergência.
+
+O módulo consolidado contém agora as duas escritas condicionais e a
+compatibilidade do produtor, mas ainda precisa ser validado em uma build/flash em que o `libgui.so` seja
+carregado antes do zygote. Binds feitos depois do boot não são evidência
+suficiente, porque `libgui.so` já fica mapeado no zygote.
+
+O scrcpy foi usado para controlar o aparelho e confirmar a reprodução visual,
+mas não altera a cadeia `MediaCodec`/`Surface`; o erro permanece nessa troca
+de superfície, não na alocação inicial do Mali.
+
 ### Backport enviado ao repositório próprio do kernel
 
 O repositório `SSM_990v2BYEXTREME` já continha os commits de

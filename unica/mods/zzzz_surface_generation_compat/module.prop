@@ -1,0 +1,6 @@
+id=surface_generation_compat
+name=Surface generation compatibility
+version=1.1
+versionCode=2
+author=At30c, PabloAtsoc9993@outlook.com
+description=Compatibility handling for reused video buffer generations in Surface and BufferQueueProducer on the legacy Exynos 990 vendor stack.
