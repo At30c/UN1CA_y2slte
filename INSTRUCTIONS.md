@@ -2799,3 +2799,68 @@ As validações locais foram `bash -n` nos scripts alterados e `git diff --check
 Os módulos `unica/mods/appzygote_compat`, `zzzzz_zygote_next_trace` e
 `scripts/capture_logcat_tmux.sh` permanecem fora deste envio por serem
 diagnósticos/experimentais, não correções confirmadas.
+
+## ICDFix adaptado para One UI 9.0 (2026-09-22)
+
+O patch recebido em `/home/ats0c/Downloads/ICDFix_8.5/` foi comparado com o
+`services.jar` decodificado da base Android 17/One UI 9. A versão 8.5 removia
+os campos `mVerifiableIntegrity` de `AttestParameterSpec` e alterava a ABI das
+classes. Essa remoção não é segura na base 9.0, que ainda compartilha essas
+classes com `samsungkeystoreutils` no bootclasspath.
+
+O patch foi adaptado em:
+
+```text
+unica/mods/knoxpatch/services.jar/0001-Bypass-ICD-verification.patch
+```
+
+A adaptação mantém os campos e a ABI da 9.0, remove os setters/reflexões que
+apenas forçavam o valor `false` em `DevicePolicyManagerService`,
+`DarManagerService`, `UserManagerService` e `SemSsdidManagerService`, e força
+o `AttestationUtils` de `services.jar` a não acrescentar o parâmetro KeyMint
+`0x700008fe` de verifiable integrity. O crédito original de Devcore94 foi
+mantido no cabeçalho do patch.
+
+Validações realizadas:
+
+1. `git apply --check` passou contra uma cópia limpa do `services.jar` 9.0.
+2. O `services.jar` reconstruído com Apktool 3.0.3-16 smaliou as duas dex e
+   foi empacotado sem erro.
+3. A remoção foi limitada aos callers identificados; os campos compartilhados
+   continuam presentes para evitar incompatibilidade de ABI.
+
+Este ajuste trata somente a construção da solicitação de atestação em
+userspace. Ele não altera o estado comprometido retornado pelo Keymaster/TEE;
+no log de 2026-09-22 o Secure Folder ainda recebeu `SECURE_HW_ACCESS_DENIED`
+(-45) em `KnoxTestKey`, portanto a eficácia no hardware precisa ser validada
+ com uma nova build instalada.
+
+## Teste do caminho Secure Folder/KnoxTestKey (2026-09-22)
+
+Foi adicionado `unica/mods/knoxpatch/services.jar/0002-Test-bypass-Knox-key-installability.patch`.
+Ele faz `DarManagerService.isKnoxKeyInstallable()` retornar `true` antes da
+tentativa de atestação de `KnoxTestKey`. O patch é somente diagnóstico: não
+modifica VaultKeeper, Keymaster, TEE ou chaves protegidas por hardware. Se o
+Secure Folder continuar falhando após essa etapa, a rejeição ocorre abaixo do
+framework e o log deve continuar mostrando `SECURE_HW_ACCESS_DENIED (-45)`.
+## VNDK v30 cgroup client repair (2026-09-22)
+
+The boot log from a clean checkout showed that vendor audio, DRM, Widevine,
+and OMX services could not link `libprocessgroup.so` because the isolated
+`com.android.vndk.v30` namespace did not contain `libcgrouprc.so`. The earlier
+cgroup modules only installed loose `/system/lib` and `/system/lib64` copies;
+that does not satisfy an APEX linker namespace.
+
+`unica/patches/vndk/customize.sh` now rebuilds the target VNDK v30 payload
+when either cgroup client is missing. It imports the target firmware's
+Android 33 libraries (both ARM32 and ARM64), validates that they export the
+required `LIBCGROUPRC_30` ABI, preserves the payload metadata, rebuilds and
+AVB-signs the APEX, and verifies that both libraries are present in the final
+`apex_payload.img`. The target libraries were selected instead of the newer
+Android 17 donor copies because `libprocessgroup.so` in this VNDK explicitly
+requires the v30 symbol version.
+
+The VNDK module still skips rebuilding when an incremental work directory
+already contains both payload libraries. A fresh/incremental build must run
+the VNDK module so the repaired APEX is included in the generated system_ext
+image.
