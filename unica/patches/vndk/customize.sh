@@ -243,7 +243,11 @@ if [ "$TARGET_VNDK_VERSION" -le 34 ]; then
         ADD_TARGET_VNDK_APEX || return 1
     fi
 
-    PATCH_VNDK_CGROUP_RUNTIME || return 1
+    # This dependency is specific to the legacy Exynos 990 VNDK v30 vendor;
+    # do not inject a v30 symbol set into other targets sharing this module.
+    if [ "$TARGET_VNDK_VERSION" = "30" ]; then
+        PATCH_VNDK_CGROUP_RUNTIME || return 1
+    fi
 
     PATCH_VNDK_MANIFEST || return 1
 

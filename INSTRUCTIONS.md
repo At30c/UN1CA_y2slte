@@ -2852,7 +2852,7 @@ cgroup modules only installed loose `/system/lib` and `/system/lib64` copies;
 that does not satisfy an APEX linker namespace.
 
 `unica/patches/vndk/customize.sh` now rebuilds the target VNDK v30 payload
-when either cgroup client is missing. It imports the target firmware's
+for the Exynos 990/API-30 target when either cgroup client is missing. It imports the target firmware's
 Android 33 libraries (both ARM32 and ARM64), validates that they export the
 required `LIBCGROUPRC_30` ABI, preserves the payload metadata, rebuilds and
 AVB-signs the APEX, and verifies that both libraries are present in the final
