@@ -1,0 +1,33 @@
+From 9e2f0b48a0c0f7a4b0f1b34e48c0e3a7b9a8d2c1 Mon Sep 17 00:00:00 2001
+From: At30c <PabloAtsoc9993@outlook.com>
+Date: Wed, 23 Sep 2026 01:20:00 -0300
+Subject: [PATCH] SystemUI: do not wake display for charging info overlays
+
+On the S24+ port, ChargingInfoExecutor calls PowerManager.wakeUp() when
+showing incomplete/slow-charger UI. On the legacy display stack this can
+leave the panel powered with no visible frame. Keep the charging popup/toast,
+but do not force a display wake from these informational overlays.
+
+---
+ .../ChargingInfoController$observeChargingInfo$1.smali       | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/smali_classes2/com/android/systemui/power/feature/charginginfo/ChargingInfoController$observeChargingInfo$1.smali b/smali_classes2/com/android/systemui/power/feature/charginginfo/ChargingInfoController$observeChargingInfo$1.smali
+--- a/smali_classes2/com/android/systemui/power/feature/charginginfo/ChargingInfoController$observeChargingInfo$1.smali
++++ b/smali_classes2/com/android/systemui/power/feature/charginginfo/ChargingInfoController$observeChargingInfo$1.smali
+@@ -2401,5 +2401,5 @@
+     move-result-wide v8
+
+-    invoke-virtual {v0, v8, v9, v7}, Landroid/os/PowerManager;->wakeUp(JLjava/lang/String;)V
++    nop
+     :try_end_0
+     .catch Ljava/lang/Exception; {:try_start_0 .. :try_end_0} :catch_0
+@@ -2450,5 +2450,5 @@
+     move-result-wide v10
+
+-    invoke-virtual {v0, v10, v11, v7}, Landroid/os/PowerManager;->wakeUp(JLjava/lang/String;)V
++    nop
+     :try_end_1
+     .catch Ljava/lang/Exception; {:try_start_1 .. :try_end_1} :catch_1
+--
+2.43.0

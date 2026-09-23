@@ -1,0 +1,41 @@
+From 7a5b4ac8e0d3f2a4f5e8a1c6d9b0e2f4a6c8d0e1 Mon Sep 17 00:00:00 2001
+From: At30c <PabloAtsoc9993@outlook.com>
+Date: Tue, 22 Sep 2026 22:15:00 -0300
+Subject: [PATCH] PowerManagerService: avoid resetting timeout on USB plug
+
+Samsung's power transition path calls userActivityNoUpdateLocked() after a
+charger/USB state change.  When the display is already interactive, that
+refreshes the user-activity timestamp and keeps the screen on for another full
+timeout every time USB is connected.
+
+Skip only the duplicate activity event for transitions involving USB power
+(plug type 2).  AC and wireless-only transitions retain the stock behavior.
+The previous plug type is preserved in the no-longer-used `p1` register so
+both connect and disconnect/oscillation events are covered without expanding
+the local-register window.  The normal
+wakePowerGroupLocked() path remains intact; PowerGroup.setWakefulnessLocked()
+records activity when a display that was asleep is actually woken.
+
+Signed-off-by: At30c <PabloAtsoc9993@outlook.com>
+---
+ .../com/android/server/power/PowerManagerService.smali | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/smali_classes2/com/android/server/power/PowerManagerService.smali b/smali_classes2/com/android/server/power/PowerManagerService.smali
+index 000000000..000000000 100644
+--- a/smali_classes2/com/android/server/power/PowerManagerService.smali
++++ b/smali_classes2/com/android/server/power/PowerManagerService.smali
+@@ -19821,5 +19821,6 @@
+     iget-boolean v1, p0, Lcom/android/server/power/PowerManagerService;->mIsPowered:Z
+
+     iget v2, p0, Lcom/android/server/power/PowerManagerService;->mPlugType:I
++    move p1, v2
+
+     iget-object v3, p0, Lcom/android/server/power/PowerManagerService;->mBatteryManagerInternal:Landroid/os/BatteryManagerInternal;
+@@ -20272,2 +20272,6 @@
+     :goto_6
++    iget v4, p0, Lcom/android/server/power/PowerManagerService;->mPlugType:I
++    const/4 v6, 0x2
++    if-eq v4, v6, :cond_15
++    if-eq p1, v6, :cond_15
+     iget-object v1, p0, Lcom/android/server/power/PowerManagerService;->mPowerGroups:Landroid/util/SparseArray;

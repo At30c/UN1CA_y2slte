@@ -1,0 +1,94 @@
+From 2a5bb54d8e706f3ec273612992868bfc4f83f810 Mon Sep 17 00:00:00 2001
+From: At30c <PabloAtsoc9993@outlook.com>
+Date: Wed, 23 Sep 2026 03:50:00 -0300
+Subject: [PATCH] SystemUI: finish doze charging animation on main thread
+
+The One UI 9 charging path enters DOZE_AOD correctly and displays its charging
+animation, but its timeout coroutine closes the session from a SystemUIBg
+thread. PluginAOD then asks DozeMachine to leave DOZE_AOD from that background
+thread, which is rejected by Assert.isMainThread(). The failed callback leaves
+the display active after the animation has disappeared.
+
+Post chargingAnimStarted(false) to PluginAODManager's main-looper handler so
+DozeMachine can complete the transition. Also avoid the newer force-ON display
+override on the Exynos 990 stack; the animation already renders through the
+DOZE_AOD path, matching the legacy device behavior.
+
+---
+ ...DozeChargingSessionImpl$$ExternalSyntheticLambda0.smali | 33 ++++++++++++++
+ .../aod/AodTriggerExecutor$DozeChargingSessionImpl.smali   | 10 ++++-
+ .../power/feature/aod/AodTriggerController.smali            |  2 +-
+ 3 files changed, 43 insertions(+), 2 deletions(-)
+
+diff --git a/smali_classes2/com/android/systemui/power/feature/aod/AodTriggerController.smali b/smali_classes2/com/android/systemui/power/feature/aod/AodTriggerController.smali
+--- a/smali_classes2/com/android/systemui/power/feature/aod/AodTriggerController.smali
++++ b/smali_classes2/com/android/systemui/power/feature/aod/AodTriggerController.smali
+@@ -286,7 +286,7 @@
+
+     const/16 v6, 0x1194
+
+-    invoke-interface {v3, v4, v5, v6}, Landroid/hardware/display/IDisplayManager;->setDisplayStateOverride(Landroid/os/IBinder;II)V
++    nop
+
+     goto :goto_1
+
+diff --git a/smali_classes2/com/android/systemui/power/feature/aod/AodTriggerExecutor$DozeChargingSessionImpl.smali b/smali_classes2/com/android/systemui/power/feature/aod/AodTriggerExecutor$DozeChargingSessionImpl.smali
+--- a/smali_classes2/com/android/systemui/power/feature/aod/AodTriggerExecutor$DozeChargingSessionImpl.smali
++++ b/smali_classes2/com/android/systemui/power/feature/aod/AodTriggerExecutor$DozeChargingSessionImpl.smali
+@@ -201,7 +201,15 @@
+
+     check-cast p0, Lcom/android/systemui/doze/PluginAODManager;
+
+-    invoke-virtual {p0, v3}, Lcom/android/systemui/doze/PluginAODManager;->chargingAnimStarted(Z)V
++    iget-object v0, p0, Lcom/android/systemui/doze/PluginAODManager;->mHandler:Lcom/android/systemui/doze/PluginAODManager$10;
++
++    new-instance v1, Lcom/android/systemui/power/feature/aod/AodTriggerExecutor$DozeChargingSessionImpl$$ExternalSyntheticLambda0;
++
++    invoke-direct {v1, p0}, Lcom/android/systemui/power/feature/aod/AodTriggerExecutor$DozeChargingSessionImpl$$ExternalSyntheticLambda0;-><init>(Lcom/android/systemui/doze/PluginAODManager;)V
++
++    invoke-virtual {v0, v1}, Landroid/os/Handler;->post(Ljava/lang/Runnable;)Z
++
++    move-result p0
+
+     sget-object p0, Lkotlin/Unit;->INSTANCE:Lkotlin/Unit;
+     :try_end_3
+diff --git a/smali_classes2/com/android/systemui/power/feature/aod/AodTriggerExecutor$DozeChargingSessionImpl$$ExternalSyntheticLambda0.smali b/smali_classes2/com/android/systemui/power/feature/aod/AodTriggerExecutor$DozeChargingSessionImpl$$ExternalSyntheticLambda0.smali
+new file mode 100644
+--- /dev/null
++++ b/smali_classes2/com/android/systemui/power/feature/aod/AodTriggerExecutor$DozeChargingSessionImpl$$ExternalSyntheticLambda0.smali
+@@ -0,0 +1,33 @@
++.class public final synthetic Lcom/android/systemui/power/feature/aod/AodTriggerExecutor$DozeChargingSessionImpl$$ExternalSyntheticLambda0;
++.super Ljava/lang/Object;
++.source "qb/114374468 c1f4fd60dbaa564108bee7f771bebe5bce2db9cc1d7d317d63759f617611371d"
++
++# interfaces
++.implements Ljava/lang/Runnable;
++
++# instance fields
++.field public final synthetic f$0:Lcom/android/systemui/doze/PluginAODManager;
++
++# direct methods
++.method public synthetic constructor <init>(Lcom/android/systemui/doze/PluginAODManager;)V
++    .locals 0
++
++    invoke-direct {p0}, Ljava/lang/Object;-><init>()V
++
++    iput-object p1, p0, Lcom/android/systemui/power/feature/aod/AodTriggerExecutor$DozeChargingSessionImpl$$ExternalSyntheticLambda0;->f$0:Lcom/android/systemui/doze/PluginAODManager;
++
++    return-void
++.end method
++
++# virtual methods
++.method public final run()V
++    .locals 1
++
++    iget-object p0, p0, Lcom/android/systemui/power/feature/aod/AodTriggerExecutor$DozeChargingSessionImpl$$ExternalSyntheticLambda0;->f$0:Lcom/android/systemui/doze/PluginAODManager;
++
++    const/4 v0, 0x0
++
++    invoke-virtual {p0, v0}, Lcom/android/systemui/doze/PluginAODManager;->chargingAnimStarted(Z)V
++
++    return-void
++.end method
+--
+2.43.0
