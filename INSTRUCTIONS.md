@@ -2808,13 +2808,14 @@ os campos `mVerifiableIntegrity` de `AttestParameterSpec` e alterava a ABI das
 classes. Essa remoção não é segura na base 9.0, que ainda compartilha essas
 classes com `samsungkeystoreutils` no bootclasspath.
 
-O patch foi adaptado em:
+O patch original foi adaptado em:
 
 ```text
 unica/mods/knoxpatch/services.jar/0001-Bypass-ICD-verification.patch
 ```
 
-A adaptação mantém os campos e a ABI da 9.0, remove os setters/reflexões que
+A implementação original é de Devcore94; esta árvore contém a adaptação
+mantida por At30c para a ABI da One UI 9.0. A adaptação mantém os campos e a ABI da 9.0, remove os setters/reflexões que
 apenas forçavam o valor `false` em `DevicePolicyManagerService`,
 `DarManagerService`, `UserManagerService` e `SemSsdidManagerService`, e força
 o `AttestationUtils` de `services.jar` a não acrescentar o parâmetro KeyMint
