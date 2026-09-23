@@ -63,6 +63,10 @@ Validation performed after adding the script:
 3. Confirmed that `y2s-logcat` remains attached while the device is connected
    and that its log contains `DEVICE_CONNECTED_2026-09-16_16:49:21-0300`.
 
+The `y2s-logcat` session was reopened on 2026-09-23 at 17:50:14 (-0300)
+using the same persistent script. It is currently waiting for ADB to report a
+connected device; no capture directory is created until the next connection.
+
 ## Logs inspected
 
 The latest active capture is:
@@ -3033,3 +3037,25 @@ The fix is published as three patches:
 
 Only these patches and this documentation entry are being committed. No ROM
 build or flash was executed while publishing them.
+
+## Source-firmware MIDAS stack (2026-09-23)
+
+The current Photo Remaster crash showed a mixed stack: the S24+ engine was
+loading the S21 `p3sxxx` PhotoRemaster APK and MIDAS libraries. The MIDAS
+module now unconditionally restores the source-firmware stack, preventing an
+environment override from selecting the incompatible S21 donor. It restores
+`vendor/etc/midas`, `vendor/etc/VslMesDetector`,
+`PhotoRemasterService.apk`, `libmidas_core.camera.samsung.so`, and
+`libmidas_DNNInterface.camera.samsung.so` from the configured S24+ source
+firmware. The change has only passed shell syntax/read-only checks; no build
+or flash was run.
+
+The first test with the coherent S24+ stack reached `AI_UPSCALE_4X`, but the
+S24+ `midas_config.json` selected its generic fallback because the device
+reports `ro.soc.model=Exynos 990`. That fallback requested the absent
+`SRIBMidas_aiUPSCALER_4X_LITE_V100_INT8.tflite`, after which the DNN cleanup
+triggered a Scudo misaligned-pointer abort. The MIDAS module now adds the
+existing Lite 2x/3x/4x model assets from the `p3sxxx` prebuilt and explicitly
+associates the fallback entry with `Exynos 990`; the Photo Remaster APK and
+MIDAS engine/core libraries remain from the S24+ source stack. This is a
+static configuration change only; no build or flash has been run.
