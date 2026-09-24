@@ -3060,24 +3060,633 @@ associates the fallback entry with `Exynos 990`; the Photo Remaster APK and
 MIDAS engine/core libraries remain from the S24+ source stack. This is a
 static configuration change only; no build or flash has been run.
 
-## HDR10+ Exynos 990 encoder compatibility (2026-09-24)
+## HDR10+ recording failure and LOG-video compatibility (2026-09-23)
 
-The Android 17 source `libstagefright.so` aborted HDR10+ recording modes 10/25.
-The first workaround escaped after the compiler had reused `x19` for the
-`ACodec` log tag, corrupting the `ACodec *this` pointer. The platform camera
-module now redirects both fatal-block entries before that clobber and restores
-the experimental CFI/process-cache modifications in incremental work dirs.
+The capture from `out/target/y2s/boot-diagnostics-2026-09-23_20:17:44-0300`
+reproduced the HDR10+ failure. The camera requests recording mode `10`,
+`StagefrightRecorder` sets the HDR10+ color aspect, and the legacy
+`OMX.Exynos.HEVC.Encoder` is created successfully. Android 17's source
+`libstagefright.so` then logs `Do not enable feature for HDR10Plus recording`
+and aborts `mediaserver` at
+`frameworks/av/media/libstagefright/ACodec.cpp:4496` (`CHECK(false)`). This is
+a framework/legacy-encoder compatibility abort, not a camera-app crash; the
+`crash_dump64` tombstone was generated normally.
 
-After that correction, `MediaRecorder::prepare()` failed with `-61`
-(`ENODATA`). Android 17 requested HEVC profile `0x2000`
-(`Main10HDR10Plus`), while the Android 11 Exynos 990 OMX encoder enumerates
-only Main (`1`), Main10 (`2`) and Main10HDR10 (`0x1000`). The camera module now
-uses the unreachable fatal block as a guarded trampoline that translates only
-`0x2000` to `0x1000` for legacy OMX verification/configuration; other HEVC
-profiles are unchanged.
+`platform/exynos990/patches/camera/customize.sh` now adds a source-SDK-37-only
+hex patch that branches directly to the normal encoder continuation, skipping
+both the `__android_log_assert` call and the following CFI slowpath. The first
+test variant only NOPed the assert; the device then correctly changed the
+failure from `SIGABRT` to a CFI `SIGTRAP`, proving that the post-assert CFI
+sequence also had to be skipped. The exact surrounding instruction sequence
+is matched, and an incremental rerun recognizes the first variant, so the
+patch cannot silently apply to an unrelated `libstagefright.so`. HDR10+
+metadata support still needs to be validated on-device after this revised
+build.
 
-The resulting branch/trampoline bytes were verified by disassembly, and the
-script passed `bash -n` and `git diff --check`. The ROM was subsequently built,
-installed and tested by the maintainer: HDR10+ recording is functional and the
-`configureCodec returning error -61` failure is resolved. Preserve this patch
-while the Exynos 990 Android 11 OMX stack is paired with Android 17 Stagefright.
+The follow-up capture at
+`out/target/y2s/boot-diagnostics-2026-09-23_21:19:22-0300` confirmed the
+intermediate patch was active: the original `SIGABRT` was gone, but
+`__cfi_slowpath` trapped at `setupVideoEncoder+3612` (`SIGTRAP`).
+
+LOG video is a separate compatibility issue. The S24+ camera feature file and
+floating features advertise `SUPPORT_LOG_VIDEO`, `SUPPORT_PREVIEW_LUT`,
+`SEC_FLOATING_FEATURE_CAMERA_CONFIG_LOG_VIDEO=V1.0`, and the gallery LOG color
+correction flag. The current S20+/Exynos 990 target feature files omit those
+flags, and the target vendor camera HAL has no matching LOG-preview/LUT
+symbols, while the S24+ HAL does. Therefore the LOG UI cannot be enabled safely
+by copying only the S24+ XML; it requires a compatible Exynos 990 HAL path and
+its LUT assets. No LOG flags or S24+ HAL blobs were forced in this change.
+
+No ROM build or flash was run after the HDR10+ patch; only shell syntax,
+pattern-match, disassembly, and whitespace checks were performed.
+
+### Additional findings from the 21:19:22 capture
+
+The USB cable is not implicated: the failure follows the camera's normal
+`OMX.Exynos.HEVC.Encoder` setup and occurs inside `mediaserver`, without a USB
+or projection error on that path.
+
+There are three additional compatibility signals to keep separate from the
+fatal HDR10+ guard:
+
+* `OMXUtils` emits 199 warnings for vendor color formats
+  `0x7f000011`, `0x10`, `0x7f00a000`, `0x7f000789` (and occasionally
+  `0x7f000012`, `0x0f`, `0x7f42016b`). The target's S20+ OMX encoder reports
+  these formats, while the active `libstagefright_omx_utils.so` is the S24+
+  source binary. This is a strong framework/vendor color-format mismatch
+  candidate; it must be resolved by mapping the formats or using a matching
+  media stack, not by merely hiding the warning.
+* The codec-list generator repeatedly reports that entries in
+  `vendor/etc/media_codecs_performance.xml` do not correspond to a currently
+  registered OMX codec. The base `media_codecs.xml`, performance XML, OMX
+  libraries, and `somxreg.conf` are byte-identical to the S20+ target firmware,
+  so this is a source Android 17 codec-list/legacy-OMX registration mismatch.
+  It is secondary for now: the HEVC encoder is still instantiated afterwards.
+* `Failed to query component store/interface for system resources: 6` appears
+  both during this recording and for unrelated Codec2 clients. It indicates a
+  missing optional resource query in the mixed media stack, but is not by
+  itself proof of the HDR10+ crash.
+
+Before the `SIGTRAP` at `21:19:36.178`, the camera HAL already reports
+`VIDIOC_DQBUF`/`Invalid argument`, invalid buffer states, frame-count
+mismatches, and dropped output frames around `21:19:35.216`. These errors can
+be a preceding stream/format failure or cleanup triggered by the recording
+request and need a camera-only comparison capture; they are not explained by
+the later `__cfi_slowpath` trap alone.
+
+After the media failure, the camera frame processor times out repeatedly
+(`-110`) and `OMXNodeInstance` reports a dead observer; those are consequences
+of `mediaserver` dying. Separately, at `21:20:21.703`, `eden_runtime` crashes
+with `SIGSEGV` while freeing NPU models, followed by invalid-model/buffer
+cleanup errors and a lazy-HAL restart. That is a real independent NPU/HAL
+problem, not evidence that HDR10+ itself caused the crash.
+
+No additional patch, build, or flash was performed for these findings.
+
+### HDR10+ follow-up: guard bypass was insufficient (2026-09-23)
+
+The next capture, `out/target/y2s/boot-diagnostics-2026-09-23_22:44:01-0300`,
+proves that the first HDR10+ guard patch was present but incomplete. The
+`Do not enable feature for HDR10Plus recording` message remained (it is the
+diagnostic log emitted before the guard), and the original abort was replaced
+by a SIGSEGV in the CFI runtime:
+
+```text
+Fatal signal 11 (SIGSEGV) in mediaserver/CodecLooper
+#00 libdl.so (__cfi_slowpath+28)
+#01 libstagefright.so (ACodec::setupVideoEncoder+3668)
+```
+
+The work-dir disassembly maps frame `+3668` to the Android 17 CFI alternate
+path at `0xecb2c`. The legacy Exynos OMX object has a different vtable
+identity, so the generated `b.ne` path passes an incompatible legacy vtable
+pointer to `__cfi_slowpath`. This is why merely removing
+`__android_log_assert()` did not produce a working recording.
+
+That interpretation was superseded on 2026-09-24. The generated CFI branches
+protect normal `ACodec` virtual calls and must not be disabled globally. The
+camera script now restores all six branches if an incremental work directory
+still contains the experimental NOPs.
+
+The later Scudo tombstone made the narrower failure explicit:
+`ACodec::setupVideoEncoder+2076` aborts while move-assigning the
+`std::string` used only to cache a Base64-encoded process name for Samsung's
+`reconfigEncoder4OtherApps()` helper. The invalid deallocation value decodes
+to ASCII bytes, consistent with corrupted short-string state. This cache is
+not part of OMX HEVC configuration or HDR10+ metadata delivery. The current
+patch therefore skips only the process-name/cache block and resumes at the
+existing encoder continuation; all CFI checks remain intact.
+
+A temporary KernelSU module was prepared to test this binary without a ROM
+build, but it never became active. `Meta-Overlayfsx` reports
+`Function not implemented` while mounting `/system`, and a direct bind mount
+is also unavailable in the granted root context. The live
+`/system/lib64/libstagefright.so` hash remained unchanged, so neither reboot
+is encoder-test evidence. The temporary module was marked for removal, and the
+camera HDR preferences were not changed during this failed deployment. The
+next valid test therefore requires the normal incremental ROM path.
+
+Static validation of the superseded experiment had passed, but its six CFI
+NOPs are no longer part of the intended result. No build or flash was run after
+the process-cache replacement was prepared.
+
+### HDR10+ runtime isolation and recording validation (2026-09-23)
+
+The live device test isolated the remaining failure to the persisted HDR10+
+setting rather than ordinary video recording. The camera preferences contained
+`hdr10_recording=1` and `hdr10_recording_indicator=1`; opening recording then
+selected `recordingmode: 10`, entered `OMX.Exynos.HEVC.Encoder`, and aborted
+`mediaserver` in Scudo while assigning a `std::string` inside
+`ACodec::setupVideoEncoder`.
+
+For the controlled test, both values were saved and set to `0`. The camera
+entered Video mode, recorded for approximately six seconds, and stopped cleanly
+with `recordingmode: 0` using `OMX.Exynos.AVC.Encoder`. The log shows 178
+encoded video frames, 278 audio frames, `Status:0`, and no `Scudo`, `Fatal
+signal`, `MEDIA_ERROR_SERVER_DIED`, or `mediaserver` death. The capture is
+`/tmp/camera-hdr-disabled-record.log`; the original preferences are backed up
+on-device at `/data/local/tmp/camera_preferences.xml.before-hdr-test`.
+
+An initial SamsungCamera workaround that forced `HDR10_RECORDING` to `0` was
+prepared after this test, but it was explicitly rejected and removed on
+2026-09-24. HDR10+ must remain exposed while the actual encoder/framework
+compatibility failure is corrected. The runtime test is retained here only as
+evidence that ordinary recording and the base Exynos OMX encoder are healthy.
+No ROM build or flash was run for the removed workaround.
+
+### Compatibility fixes prepared for the next build (2026-09-23)
+
+Two functional changes were added after the capture analysis; the other two
+items were audited and deliberately left untouched because there is no safe
+ABI-preserving fix yet. No build or flash was run:
+
+* `platform/exynos990/patches/eden/customize.sh` now restores the S20+ target
+  system-side EDEN HIDL bridge as a unit (`libeden_nn_on_system.so`,
+  `libeden_rt_stub.edensdk.samsung.so`, and
+  `vendor.samsung_slsi.hardware.eden_runtime@1.0.so`) when the source SDK is
+  37 or newer.  The source AIDL stub is not mixed into those three libraries.
+  This is aimed at the independent `eden_runtime` SIGSEGV during model
+  cleanup.
+* `platform/exynos990/patches/miscs/customize.sh` removes
+  `vendor/etc/media_codecs_performance.xml` for source SDK 37+.  The file is
+  the S20+ legacy OMX performance overlay; Android 17 reports 180 entries as
+  non-existing codecs.  `media_codecs.xml` and the C2 metadata are retained.
+* The vendor color-format warnings were not force-mapped.  They originate in
+  the Android 17 `libstagefright_omx_utils.so` parser, while the Exynos 990
+  OMX driver advertises Samsung-private formats (`0x7f000011`,
+  `0x7f000789`, `0x7f42016b`, etc.).  The available target parser is an older
+  ABI and cannot safely replace the source parser.  A binary mapping without
+  the exact plane layout would risk corrupting buffers, so this item remains
+  intentionally unmodified pending a controlled codec-format test.
+* The `Failed to query component store/interface for system resources: 6`
+  message is emitted for unrelated apps as well as the camera.  It is an
+  optional Codec2 resource-query failure, not an absent library proven by the
+  capture; no unsafe S24+ Codec2 HAL was imported for it.
+
+## GPU driver-family alignment for Chromium/social apps (2026-09-23)
+
+Instagram/TikTok/Chromium workloads were heating the device quickly.  The
+strongest static mismatch in the 2026-09-23 boot capture was the graphics
+driver stack: source S24+ `EX2400` properties and APKs were left alongside the
+S20+ `EX9830` target pair.  The log showed `ro.gfx.driver.0/1` being
+overridden to `com.samsung.*.ex2400`, while the target packages were rejected
+as not being in the allowed preload list.  The same capture also showed Mali
+`No OPPs found in device tree!` and repeated `SF_GPU_MINLOCK [TIMEOUT / 2000]`
+events, so the driver mismatch is being treated as the first reversible test,
+not as proof that the kernel is the only cause.
+
+`platform/exynos990/patches/stock_blobs/customize.sh` now performs the
+following only when the target firmware contains both EX9830 APKs:
+
+* removes the source `GameDriver-EX2400` and `DevGPUDriver-EX2400` trees;
+* restores the target `GameDriver-EX9830` and `DevGPUDriver-EX9830` pair;
+* restores their target `.apk.prof` files when present;
+* sets `ro.gfx.driver.0/1` in both `product` and `vendor` to the actual EX9830
+  package IDs;
+* replaces EX2400 entries with EX9830 entries in
+  `allowed-system-preload-apps.xml`, `apks_count_list.txt`, and
+  `irremovable_list.txt` when those generated metadata files exist.
+
+The script passed `bash -n` and `git diff --check`.  No ROM build or flash was
+performed after this change.  The next test must be done with USB charging
+disconnected and should compare `dumpsys thermalservice`, Mali/devfreq state,
+and `logcat` before and after opening Instagram and TikTok.  If heat remains,
+the next isolated A/B is disabling the forced Vulkan/hint-manager properties;
+the kernel OPP/DVFS tables should not be changed blindly before that result.
+
+## HDR10+ follow-up: patch was in the wrong execution path (2026-09-24)
+
+The capture
+`out/target/y2s/boot-diagnostics-2026-09-24_01:09:17-0300/logcat.txt`
+shows that HDR10+ is still not functional. The camera enables
+`hdr10_recording=1`, creates `OMX.Exynos.HEVC.Encoder`, and `mediaserver`
+dies at:
+
+```text
+libdl.so (__cfi_slowpath+28)
+libstagefright.so (ACodec::setupVideoEncoder+3696, PC 0xecb48)
+```
+
+The fault is `SEGV_ACCERR`, not the old HDR10+ `SIGABRT`; the crash is the
+generated CFI alternate path reached by the legacy Exynos OMX vtable. The
+crash dump was captured normally and `MEDIA_ERROR_SERVER_DIED` is a
+consequence of `mediaserver` exiting.
+
+The previous HDR10+ changes had been placed only in
+`platform/exynos990/patches/camera/customize.sh`, while the build log proves
+that the active patch script is `unica/patches/camera/customize.sh`. A clean
+build could therefore omit the fix. The compatibility block is now present
+in the active script (and mirrored in the platform-specific script):
+
+* skip the Android 17 HDR10+ fatal-assert path;
+* bypass only the six CFI conditional branches in
+  `ACodec::setupVideoEncoder`, rather than disabling CFI globally; and
+* skip only the incompatible optional Base64 process-name cache.
+
+Each replacement is guarded by its complete byte pattern and aborts if the
+expected source-SDK-37 blob is not present. This change has passed `bash -n`
+and `git diff --check`; no build or flash has been run yet. The next test must
+verify that `make_rom` prints the new
+`Applying Exynos 990 HDR10+ ACodec compatibility` step and that the installed
+`libstagefright.so` contains the six NOP replacements before reproducing HDR.
+
+The subsequent test confirmed the six replacements were present in the
+installed library, but the crash remained at the same `ecb48` address. The
+remaining path was the two HDR metadata calls immediately after those six
+branches (`setColorAspectsForVideoEncoder` and
+`setHDRStaticInfoForVideoCodec`); their CFI branches were not included in the
+first set. The active script now covers eight function-local branches in
+total. No build or flash has been run after adding these two patterns.
+
+### Persistent capture reopened (2026-09-24 09:17:06 -0300)
+
+The detached `y2s-logcat` tmux session was reopened with
+`scripts/capture_logcat_tmux.sh`. It remains alive while ADB is disconnected,
+and will create a fresh timestamped `boot-diagnostics-*` directory and
+`DEVICE_CONNECTED_<timestamp>` marker as soon as the device reconnects. At
+the time of reopening, `adb get-state` reported no connected device; no ROM
+or repository build was run.
+
+### HDR10+ helper CFI follow-up (2026-09-24)
+
+The latest capture moved the failure past the eight previously bypassed
+`setupVideoEncoder()` branches. The camera now reaches
+`ACodec::setColorAspectsForVideoEncoder()`, but `mediaserver` still exits with
+`SIGSEGV` in `libdl::__cfi_slowpath` at `libstagefright.so+0xf1e8c`.
+The tombstone identifies the same legacy Exynos OMX vtable/type-cookie mismatch
+(`x0=0x5b6339fcfa1859d1`, `x1=0x65006365646f4341`), so this is not evidence of a
+new sensor or HDR metadata failure yet.
+
+The active and mirrored camera patch scripts now add six narrowly matched NOP
+replacements for the CFI alternate branches: four in
+`setColorAspectsForVideoEncoder` (`+0x280`, `+0x2e0`, `+0x2b0`, and `+0x2c8`)
+and two in `setHDRStaticInfoForVideoCodec`. The latter are reached immediately
+after the color-aspects helper. Together with the eight
+existing `setupVideoEncoder()` replacements, the guarded compatibility block
+covers fourteen HDR-path branches. Each replacement requires its exact
+source-SDK-37 byte sequence and remains idempotent on incremental builds; CFI
+is not disabled globally. This change has only passed shell syntax and diff
+checks. No build or flash was run after it, so HDR10+ is not yet declared fixed.
+### HDR10+ runtime after the fourteen CFI bypasses (2026-09-24)
+
+The captures
+`out/target/y2s/boot-diagnostics-2026-09-24_10:34:20-0300/logcat.txt` and
+`out/target/y2s/boot-diagnostics-2026-09-24_10:34:26-0300/logcat.txt` were made
+after the build that applied all fourteen byte patches. They confirm that the
+patches are active: the previous fault at
+`setColorAspectsForVideoEncoder+680` (`+0xf1e8c`, the CFI alternate stub) moved
+to `setColorAspectsForVideoEncoder+148` (`+0xf1c78`).
+
+The new PC is the first direct dereference after the CFI branch was bypassed:
+`ldr x25, [x24]`. The tombstone has `x24=0x6d2f76612f736b72`, which is ASCII
+data (`"rks/av/m"`) rather than a valid pointer, and `x19` points into the
+`libstagefright.so` read-only string table at the literal `"ACodec"` instead of
+an `ACodec` heap object. The same invalid object state is visible one level
+earlier in `LoadedState::onConfigureComponent`, whose parent pointer field is
+used to call `configureCodec`.
+
+This proves that the remaining failure is an ACodec object/ABI or symbol-
+interposition mismatch between the Android 17 framework media stack and the
+legacy Exynos 990 OMX stack. It is no longer a missing CFI branch. Adding more
+NOPs would only skip further checks and dereference more invalid fields; it
+cannot restore the object layout. The log also still reports the known vendor
+color formats (`0x7f000011`, `0x10`, `0x7f00a000`, `0x7f000789`) and then
+`MEDIA_ERROR_SERVER_DIED`, but those warnings occur after the invalid ACodec
+state has already entered configuration.
+
+No additional CFI patch was added. The next valid fix must align the complete
+`ACodec`/`libstagefright` ABI (or use a matching target media stack), followed
+by a fresh HDR test; the fourteen-branch bypass remains only a diagnostic
+experiment and does not make HDR10+ functional.
+
+### HDR10+ root cause in the fatal-block bypass (2026-09-24)
+
+Deeper disassembly superseded the ABI/interposition conclusion above. The
+invalid pointer was produced deterministically by the experimental patch
+itself. In `ACodec::setupVideoEncoder()`, the Android 17 fatal block starts at
+`0xecaa0`; because `__android_log_assert()` is declared `noreturn`, the
+compiler legitimately reuses callee-saved register `x19` for the static
+`"ACodec"` log tag at `0xecaa8`. The previous patch escaped from the block only
+at `0xecae0`, after that assignment, and returned to normal setup at `0xec3f8`.
+Every later helper therefore received the read-only log-tag address as its
+`ACodec *this`. This exactly explains both tombstone values: `x19` points to
+the `"ACodec"` literal and the later `x24` load decodes adjacent
+`frameworks/av` text as a pointer.
+
+`platform/exynos990/patches/camera/customize.sh` now patches the first
+x19-clobbering instruction at `0xecaa8` into `b 0xec1d0`. Both fatal-block
+entries retain the real `ACodec` pointer and continue through the existing OMX
+setup path. The original assert and every generated CFI check remain present;
+the fatal block is simply unreachable for this guarded Exynos 990 case. For
+incremental work directories, the script also restores the superseded assert
+jump, all fourteen CFI NOPs, and the process-cache bypass before applying the
+new branch. The duplicated device-specific block was removed from
+`unica/patches/camera/customize.sh`; the implementation now has one owner in
+the Exynos 990 platform module.
+
+Static migration was tested on a copy of the currently patched work-dir
+library. Its disassembly contains `ca fd ff 17` at `0xecaa8`, decoded as
+`b 0xec1d0`; the branch at `0xf1c64` and the remaining CFI sites match the
+unmodified S24+ source again. After migration, binary differences from the
+source are limited to the existing model-name, fread-bound, encoder-input/SVC,
+and new fatal-entry compatibility patches. Both camera scripts pass `bash -n`
+and the repository passes `git diff --check`. No ROM build or flash was run,
+so runtime HDR10+ recording still requires the next installed build test.
+
+### HDR10+ encoder negotiation failure after the fatal-block fix (2026-09-24)
+
+The build containing the corrected fatal-block branch no longer crashes
+`mediaserver`, but entering HDR10+ video mode displays the generic camera error
+that the recording could not be saved. The capture at
+`out/target/y2s/boot-diagnostics-2026-09-24_11:52:10-0300/logcat.txt` proves
+that this is not a filesystem failure: `StagefrightRecorder` selects recording
+mode 10 and creates `OMX.Exynos.HEVC.Encoder`, then `ACodec` returns `-61`
+(`ENODATA`) while configuring the codec. `MediaRecorder::prepare()` fails
+before a frame is encoded, so the empty output file is subsequently truncated.
+
+Static analysis identified the exact compatibility boundary. Android 17 asks
+the HEVC component for profile `8192`
+(`OMX_VIDEO_HEVCProfileMain10HDR10Plus`). The Exynos 990 Android 11 OMX
+component's profile query at `Exynos_HEVCEnc_GetParameter+0x5f8` enumerates an
+internal three-entry table containing only Main (`1`), Main10 (`2`) and
+Main10HDR10 (`4096`). Exhausting that table returns `OMX_ErrorNoMore`, which
+Stagefright surfaces unchanged as `-ENODATA` (`-61`). The advertised input
+formats include `AndroidOpaque` (`0x7f000789`), so the earlier color-format
+hypothesis is not the cause of this particular prepare failure.
+
+`platform/exynos990/patches/camera/customize.sh` now adds a narrow Android 17
+profile bridge in `libstagefright.so`. The otherwise unreachable HDR10+ fatal
+block is reused as a six-instruction trampoline from
+`ACodec::setupHEVCEncoderParameters()`: only requested profile `0x2000` is
+translated to the legacy component's `0x1000` for profile verification and the
+OMX HEVC parameter; every other HEVC profile remains unchanged. Both original
+fatal-block entries now branch directly to the normal encoder path before x19
+can be clobbered. The script recognizes both a clean source blob and an
+incremental work directory carrying the previous fatal-entry patch.
+
+The byte patches were applied to a temporary copy of the clean S24+
+`libstagefright.so` and disassembled. The two fatal entries resolve to
+`b 0xec1d0`, the HEVC profile load at `0xf10a8` resolves to the trampoline at
+`0xecab0`, and the trampoline conditionally stores `0x1000` before returning to
+`0xf10ac`. `bash -n` and `git diff --check` pass. No ROM build was executed.
+The next installed-build test must first confirm that `ACodec configureCodec
+returning error -61` and `MediaRecorder prepare failed: -61` are absent, then
+verify that a saved HEVC file contains HDR10+ dynamic metadata rather than
+assuming successful encoder creation alone proves full HDR10+ operation.
+
+### HDR10+ confirmed functional on device (2026-09-24)
+
+The ROM containing the HEVC profile bridge was built, installed and tested on
+the device by the maintainer. HDR10+ recording is now functional. This runtime
+result confirms that translating the Android 17 request from profile `0x2000`
+to the Exynos 990 OMX profile `0x1000` removes the `-61` encoder-negotiation
+failure while preserving the vendor HDR10+ recording path. Keep the guarded
+fatal-block/profile trampoline in the Exynos 990 camera module; it is no longer
+an unverified diagnostic experiment.
+
+### SecSettings crash while selecting apps to hide Developer options (2026-09-24)
+
+The crash was reproduced when opening the app-selection screen used by the
+custom Developer-options hiding feature. The first fatal exception in the
+current log is:
+
+```text
+FATAL EXCEPTION: main
+Process: com.android.settings
+java.lang.NoSuchFieldError: No field mMainSwitch of type
+Lcom/android/settings/widget/SettingsMainSwitchBar; in class
+com.android.settings.SettingsActivity
+at io.mesalabs.unica.settings.spoof.HideDeveloperStatusFragment.onCreateView(...)
+```
+
+This is a `SecSettings.apk` ABI mismatch, not a kernel crash or a full device
+reboot. The target `SettingsActivity.smali` does not declare the `mMainSwitch`
+field, while the custom fragment directly executes an `iget` against that
+field during `onCreateView`, before the app list is displayed:
+
+```text
+out/target/y2s/apktool/system/priv-app/SecSettings/SecSettings.apk/
+  smali_classes4/io/mesalabs/unica/settings/spoof/HideDeveloperStatusFragment.smali
+```
+
+The same incompatible access is present in
+`io/mesalabs/unica/settings/hma/HideMyApplistFragment.smali` and should be
+fixed together. The likely correction is to obtain the switch bar through the
+target Settings implementation/resource instead of reading the absent private
+field; simply deleting the access would avoid the crash but may leave the
+switch UI disconnected. No patch, build, or flash was performed for this
+issue yet. Before changing it, inspect the target `SettingsActivity` methods,
+resources, and other fragments for the compatible switch-bar accessor.
+
+### SecSettings switch-bar compatibility fix (2026-09-24)
+
+The two affected UN1CA fragments were adapted to the target One UI 9
+`SettingsActivity` ABI. Instead of reading the missing private
+`SettingsActivity.mMainSwitch` field, both fragments now inflate the existing
+target `styled_switch_bar` layout, insert it at the top of the preference
+content container, resolve its `switch_bar` child, and keep using the existing
+listener/state logic:
+
+```text
+unica/mods/settings/SecSettings.apk/smali_classes4/io/mesalabs/unica/settings/spoof/HideDeveloperStatusFragment.smali
+unica/mods/settings/SecSettings.apk/smali_classes4/io/mesalabs/unica/settings/hma/HideMyApplistFragment.smali
+```
+
+This removes both `mMainSwitch` field references and keeps the switch UI
+functional on the current base. `git diff --check` passed. No ROM build or
+flash was executed; the maintainer must build/install `SecSettings.apk` and
+open both app-picker screens to validate the runtime behavior.
+
+### Codec2 resource pressure and social-app GPU path (2026-09-24)
+
+The latest capture contains 21 occurrences of
+`Failed to query component store for system resources: 6` across Instagram,
+TikTok, Spotify, and `mediaserver`. In Codec2, status `6` is the
+`C2_NO_MEMORY` result, not a harmless component-name warning. The same
+timeline shows LMKD low-watermark reclaim and DMA-BUF usage rising to roughly
+817--834 MB while Instagram starts `OMX.Exynos.vp9.dec`; the decoder is then
+reclaimed and shut down. This is the first reversible pressure point to test
+for frequent Instagram/TikTok use and related heat, before importing an
+incompatible S24+ Codec2 HAL.
+
+The S24+ source vendor properties were forcing
+`ro.hwui.use_vulkan=true` and `debug.hwui.use_hint_manager=true`, while the
+S20+ Exynos 990 target leaves the Vulkan selector empty and does not define
+the hint-manager override. `platform/exynos990/patches/miscs/customize.sh`
+now restores those target values: it clears `ro.hwui.use_vulkan` and removes
+the hint-manager override. GPU acceleration is not disabled; only the
+source-device GPU policy is no longer forced onto the Exynos 990.
+
+This change is intentionally limited to an A/B thermal/DMA-BUF test. No ROM
+build or flash was executed. The next build should compare, while repeatedly
+opening Instagram and TikTok, `DmaBuf` totals, LMKD reclaim events,
+`system resources: 6`, skin temperature, and GPU timeout events. If those
+fall, the C2 error was pressure-induced; if they remain, the next target is
+the mixed 1.2 framework/1.0 vendor Codec2 stack, not a blind S24+ HAL import.
+
+### Suspend service compatibility and Codec2 `BAD_INDEX` (2026-09-24)
+
+The 443 `power: ISystemSuspend::getService() failed` messages are an actual
+transport mismatch. The S20+ target firmware contains the dual
+`android.system.suspend@1.0-service` implementation, which registers both the
+legacy HIDL endpoint used by `gpsd`/RIL/sensors and the Android 17 AIDL
+endpoint. The source S24+ payload had replaced it with the AIDL-only daemon,
+so legacy vendor clients could not find `ISystemSuspend/default`.
+
+`platform/exynos990/patches/miscs/customize.sh` now restores the target's
+dual-transport daemon while retaining the source service path and adds only
+the target HIDL bridge library and `libSuspendProperties.so`. It also replaces
+the AIDL-only suspend manifest with the target manifest that advertises both
+transports. `unica/patches/selinux/customize.sh` grants the `system_suspend`
+domain read access to the target kernel's labeled `debugfs/wakeup_sources`
+tree (including traversal of the parent debugfs directory), fixing the accompanying `Error opening wakeup*/...: Permission denied`
+spam without broadening access to other domains.
+
+The six `CCodecConfig ... BAD_INDEX` lines are different: they occur while
+querying optional AAC/Vorbis fields, after which Codec2 initializes, allocates,
+and releases the component normally. They are not the cause of the
+`C2_NO_MEMORY`/DMA-BUF pressure events, so no unsafe codec XML or binary patch
+was added for them. No ROM build or flash was executed; validate the suspend
+fix in the next build by checking that `ISystemSuspend::getService() failed`
+and `Error opening wakeup` disappear while `dumpsys suspend_control_internal`
+still reports the service.
+
+### AVC HDR-static discovery and decoder-buffer verdict (2026-09-24)
+
+The 36 `ACodec: [OMX.Exynos.avc.dec] ... HDRStaticInfo failed even though
+codec advertises support` messages have a concrete vendor-side cause. The
+Android 11 Exynos AVC decoder returns a valid index for
+`OMX.google.android.index.describeHDRStaticInfo` from
+`Exynos_OMX_VideoDecodeGetExtensionIndex()`, but its GetConfig and SetConfig
+paths reject that same index with `OMX_ErrorUnsupportedIndex`. Android 17
+therefore repeats an operation that the AVC component never implemented.
+
+`platform/exynos990/patches/miscs/customize.sh` now patches both ARM32 and
+ARM64 `libOMX.Exynos.AVC.Decoder.so` instances so only the false-positive
+HDR-static string match falls through to the generic unsupported-index result.
+This prevents Stagefright from caching the unusable index and eliminates the
+repeated get/set attempts. HEVC and the confirmed-working HDR10+ encoder path
+are not changed. The clean target blobs contain each guarded pattern exactly
+once; temporary patched copies disassemble to an ARM `mov r0, r0` and an
+AArch64 `nop` at the two former equality branches.
+
+The same log's two `[NALQ] no dst buffers` messages are not fatal allocation
+failures. In the Exynos 990 kernel source,
+`__mfc_nal_q_run_in_buf_dec()` emits that line when the destination queue is
+temporarily empty and returns `-EAGAIN`; both occurrences coincide with
+Spotify replacing or destroying video surfaces, after which decoding
+continues. Likewise, `clearBuffersForDisconnectLocked` and
+`Surface::cancelBuffer given a leaked buffer` occur during those explicit
+surface disconnects. Do not patch the kernel or libgui merely to suppress
+these lifecycle diagnostics unless a future capture shows a decoder timeout,
+watchdog, or unrecovered playback failure immediately afterward.
+
+The HWUI compatibility block was also hardened. A previous work directory
+contained both an empty target `ro.hwui.use_vulkan=` and later source values
+`ro.hwui.use_vulkan=true`/`debug.hwui.use_hint_manager=true`; Android property
+ordering could therefore retain the incompatible source policy. The module
+now deletes every occurrence directly from `vendor/build.prop`, appends one
+canonical empty target selector, and removes the hint-manager override. This
+keeps normal GPU acceleration while preventing duplicate properties from
+undoing the Exynos 990 policy.
+
+Static validation performed: `bash -n` on the modified module, exact clean-
+blob pattern counts, disassembly of temporary patched ARM32/ARM64 decoder
+copies, and `git diff --check`. No ROM build or device flash was performed.
+After installing the next build, reproduce AVC playback in Spotify, Instagram
+and TikTok and confirm that the `HDRStaticInfo failed` messages disappear;
+also verify the final `vendor/build.prop` has only one empty
+`ro.hwui.use_vulkan` and no `debug.hwui.use_hint_manager` entry.
+
+### ExtremeKRNL verified-build pipeline (2026-09-24)
+
+The ExtremeKRNL integration could associate a new cache key with an old
+kernel artifact. `BUILD_KERNEL` returned a failure status, but its caller did
+not check that status explicitly. Because `build/out/<model>/boot.img` from a
+previous run was left in place, the later existence checks succeeded and the
+old image was cached as if it had just been compiled. The evidence in the
+working tree was explicit: `out/vmlinux` and `out/arch/arm64/boot/Image` were
+generated on 2026-09-24, while the packaged `build/out/y2s/Image` and
+`boot.img` were still from 2026-09-22 and had a different Image SHA-256.
+
+`platform/exynos990/patches/extremekrnl/customize.sh` now treats kernel
+production as a verified transaction:
+
+- external kernel patches are optional: branches such as One UI 8.5, which do
+  not have a `patches/` directory, build normally with a `none` patch-set
+  digest; branches that provide patches still apply them idempotently before
+  calculating the build state;
+- its cache key includes a schema version, the integration script, every
+  available kernel patch and its checksum, the complete kernel Git state,
+  submodules and build arguments;
+- a cache miss removes only the guarded Kbuild and model output directories,
+  preventing old objects or packaged images from satisfying a new build;
+- a failed `build.sh` now aborts immediately and can never create a cache
+  manifest;
+- `Image`, `boot.img`, `dtbo.img` and the LTE DTBO must be non-empty and newer
+  than the build-start marker;
+- the Image copied by `build.sh` must match the current Kbuild Image, and the
+  kernel extracted from the Android boot header must match that Image;
+- the cache is a versioned manifest containing SHA-256 values for every
+  artifact, and copied work-directory images are checksum-verified again.
+
+The artifact pipeline deliberately has no One UI 9-specific BPF, cgroup or
+capability assumptions. This allows the same correction to be carried to the
+One UI 8.5 `origin/sixteen` implementation, which contains the cache bug but
+no external kernel patches. Patch correctness is guaranteed by `git apply`
+or its reverse applicability check; the clean build and Image/boot checks then
+guarantee that this exact resulting source state produced the delivered
+artifact.
+
+Static validation passed with `bash -n` and `git diff --check`. The boot-header
+extractor confirmed that the existing old `boot.img` embeds its adjacent old
+Image. Most importantly, the new compiled-artifact validator rejected the
+current mixed state with `Packaged kernel Image does not match the Image from
+the current build tree`, while a synthetic matched-artifact test passed. No
+full kernel or ROM build was started; the next normal build will deliberately
+invalidate the old cache and perform one clean kernel compilation.
+
+### SecSettings app-hiding screen crash (2026-09-24)
+
+The previous switch-bar adaptation still crashed when opening the UN1CA app
+picker screens. The target `styled_switch_bar.xml` inflates a
+`com.samsung.android.settings.widget.SecMainSwitchBar`, while the adapted
+smali immediately cast that child to the derived
+`com.android.settings.widget.SettingsMainSwitchBar`. That is an ABI-level
+`ClassCastException`, before the app list can be shown.
+
+Both fragments now inflate the target `sec_settings_main_switch_bar` layout.
+Its root is already a `SettingsMainSwitchBar`, so the cast and subsequent
+listener/state calls use the correct class without manually nesting or
+searching the incompatible `styled_switch_bar` child:
+
+```text
+unica/mods/settings/SecSettings.apk/smali_classes4/io/mesalabs/unica/settings/spoof/HideDeveloperStatusFragment.smali
+unica/mods/settings/SecSettings.apk/smali_classes4/io/mesalabs/unica/settings/hma/HideMyApplistFragment.smali
+```
+
+Static validation confirmed that the target layout root is
+`SettingsMainSwitchBar`, both fragments reference
+`sec_settings_main_switch_bar`, and the incompatible nested cast path was
+removed. `git diff --check` passed. No APK/ROM build or flash was performed;
+build `SecSettings.apk` and open both UN1CA screens to validate on-device.

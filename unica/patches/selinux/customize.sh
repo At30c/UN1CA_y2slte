@@ -84,6 +84,21 @@ if ! grep -qF "$ION_ALLOCATOR_RULE" "$VENDOR_SEPOLICY"; then
     PATCHED=true
 fi
 
+# The Android 17 suspend daemon reads the legacy Exynos wakeup-source tree
+# while collecting wakelock statistics. The source policy labels that tree
+# but does not grant the system_suspend domain read access, so every wakeup
+# entry logs EACCES even though suspend itself is otherwise operational.
+SUSPEND_DEBUGFS_RULE="(allow system_suspend debugfs (dir (getattr search)))"
+SUSPEND_WAKEUP_DIR_RULE="(allow system_suspend debugfs_wakeup_sources (dir (ioctl read getattr lock open watch watch_reads search)))"
+SUSPEND_WAKEUP_FILE_RULE="(allow system_suspend debugfs_wakeup_sources (file (ioctl read getattr lock map open watch watch_reads)))"
+SUSPEND_WAKEUP_LINK_RULE="(allow system_suspend debugfs_wakeup_sources (lnk_file (ioctl read getattr lock open watch watch_reads)))"
+for SUSPEND_RULE in "$SUSPEND_DEBUGFS_RULE" "$SUSPEND_WAKEUP_DIR_RULE" "$SUSPEND_WAKEUP_FILE_RULE" "$SUSPEND_WAKEUP_LINK_RULE"; do
+    if ! grep -q -F "$SUSPEND_RULE" "$WORK_DIR/system/system/etc/selinux/plat_sepolicy.cil"; then
+        printf '%s\n' "$SUSPEND_RULE" >> "$WORK_DIR/system/system/etc/selinux/plat_sepolicy.cil"
+        PATCHED=true
+    fi
+done
+
 # Android 17 sources no longer ship the Android 10/11 compatibility mappings
 # required by the Exynos 990 vendor policy. They must exist in system_ext
 # before the removal pass below reads the target vendor's CIL version.
@@ -155,5 +170,7 @@ if ! $PATCHED; then
 fi
 
 unset ENTRIES DUPLICATES CIL_NAME CIL_FILE PATCHED SYSTEM_EXT_SELINUX VENDOR_FILE_CONTEXTS VENDOR_SEPOLICY
-unset ION_ALLOCATOR_TYPE ION_ALLOCATOR_RULE VENDOR_API_LIST LEGACY_MAPPING
+unset ION_ALLOCATOR_TYPE ION_ALLOCATOR_RULE SUSPEND_DEBUGFS_RULE SUSPEND_WAKEUP_DIR_RULE \
+    SUSPEND_WAKEUP_FILE_RULE SUSPEND_WAKEUP_LINK_RULE SUSPEND_RULE \
+    VENDOR_API_LIST LEGACY_MAPPING
 unset -f GET_SYSTEM_EXT

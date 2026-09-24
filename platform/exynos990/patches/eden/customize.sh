@@ -16,6 +16,30 @@ fi
 
 LOG_STEP_OUT
 
+if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 37 ]]; then
+    LOG_STEP_IN "- Restoring the target EDEN HIDL system bridge"
+
+    # The S24+ source contributes the Android 17 AIDL EDEN stub, while the
+    # Exynos 990 vendor service is still
+    # vendor.samsung_slsi.hardware.eden_runtime@1.0 (HIDL).  Keeping the
+    # source system bridge makes model cleanup call the AIDL interface against
+    # a HIDL service and is what produces the eden_runtime SIGSEGV/restart
+    # sequence seen in the boot capture.  Restore the three matched target
+    # system-side libraries as a unit; do not mix one of them with the source
+    # AIDL stub.
+    EDEN_SYSTEM_BLOBS="
+system/lib64/libeden_nn_on_system.so
+system/lib64/libeden_rt_stub.edensdk.samsung.so
+system/lib64/vendor.samsung_slsi.hardware.eden_runtime@1.0.so
+"
+    for blob in $EDEN_SYSTEM_BLOBS; do
+        ADD_TO_WORK_DIR "$TARGET_FIRMWARE" "system" "$blob" 0 0 644 "u:object_r:system_lib_file:s0"
+    done
+
+    LOG_STEP_OUT
+    unset EDEN_SYSTEM_BLOBS
+fi
+
 LOG_STEP_IN "- Patching libvpl.so (64-bit only)"
 
 LIBVPL_64="$WORK_DIR/vendor/lib64/libvpl.so"

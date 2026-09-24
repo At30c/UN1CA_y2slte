@@ -112,8 +112,68 @@ ADD_TO_WORK_DIR "$TARGET_FIRMWARE" "system" "system/lib64/libsamsungSoundbooster
 LOG_STEP_OUT
 
 LOG_STEP_IN "- Replacing GameDriver"
-ADD_TO_WORK_DIR "$TARGET_FIRMWARE" "system" "system/priv-app/GameDriver-EX9830/GameDriver-EX9830.apk" 0 0 644 "u:object_r:system_file:s0"
-ADD_TO_WORK_DIR "$TARGET_FIRMWARE" "system" "system/priv-app/DevGPUDriver-EX9830/DevGPUDriver-EX9830.apk" 0 0 644 "u:object_r:system_file:s0"
+GPU_TARGET_FIRMWARE_PATH="$(cut -d "/" -f 1 -s <<< "$TARGET_FIRMWARE")_$(cut -d "/" -f 2 -s <<< "$TARGET_FIRMWARE")"
+GPU_TARGET_FIRMWARE="$FW_DIR/$GPU_TARGET_FIRMWARE_PATH"
+
+# The Android 17 source firmware contributes EX2400 GameDriver packages and
+# corresponding ro.gfx.driver.* properties.  They are not compatible with
+# the Exynos 990 Mali stack.  The actual S20+ donor packages are EX9830, so
+# keep one coherent driver family and only apply this block when both target
+# APKs are available.
+if [ -f "$GPU_TARGET_FIRMWARE/system/system/priv-app/GameDriver-EX9830/GameDriver-EX9830.apk" ] && \
+        [ -f "$GPU_TARGET_FIRMWARE/system/system/priv-app/DevGPUDriver-EX9830/DevGPUDriver-EX9830.apk" ]; then
+    DELETE_FROM_WORK_DIR "system" "system/priv-app/GameDriver-EX2400"
+    DELETE_FROM_WORK_DIR "system" "system/priv-app/DevGPUDriver-EX2400"
+    for GPU_FILE in \
+            "GameDriver-EX9830/GameDriver-EX9830.apk" \
+            "GameDriver-EX9830/GameDriver-EX9830.apk.prof" \
+            "DevGPUDriver-EX9830/DevGPUDriver-EX9830.apk" \
+            "DevGPUDriver-EX9830/DevGPUDriver-EX9830.apk.prof"; do
+        if [ -f "$GPU_TARGET_FIRMWARE/system/system/priv-app/$GPU_FILE" ]; then
+            ADD_TO_WORK_DIR "$TARGET_FIRMWARE" "system" "system/priv-app/$GPU_FILE" 0 0 644 "u:object_r:system_file:s0"
+        fi
+    done
+
+    # Both source product properties and target vendor properties may be
+    # present in the merged tree.  Set both locations so a later property
+    # import cannot select EX2400 or the stale EX990 aliases.
+    SET_PROP "product" "ro.gfx.driver.0" "com.samsung.gamedriver.ex9830"
+    SET_PROP "product" "ro.gfx.driver.1" "com.samsung.pregpudriver.ex9830"
+    SET_PROP "vendor" "ro.gfx.driver.0" "com.samsung.gamedriver.ex9830"
+    SET_PROP "vendor" "ro.gfx.driver.1" "com.samsung.pregpudriver.ex9830"
+
+    GPU_ALLOWLIST="$WORK_DIR/system/system/etc/sysconfig/allowed-system-preload-apps.xml"
+    if [ -f "$GPU_ALLOWLIST" ]; then
+        EVAL "sed -i -e '/package=\"com.samsung.gamedriver.ex2400\"/d' -e '/package=\"com.samsung.pregpudriver.ex2400\"/d' \"$GPU_ALLOWLIST\""
+        if ! grep -q 'package="com.samsung.gamedriver.ex9830"' "$GPU_ALLOWLIST"; then
+            EVAL "sed -i '/<\\/config>/i\\    <allowed-system-preload package=\"com.samsung.gamedriver.ex9830\"/>\\n    <allowed-system-preload package=\"com.samsung.pregpudriver.ex9830\"/>' \"$GPU_ALLOWLIST\""
+        fi
+    fi
+
+    # Keep the generated package metadata in sync with the files that are
+    # actually present.  These lists are consumed by Samsung's package
+    # accounting/immutability helpers and otherwise retain EX2400 paths.
+    for GPU_LIST in \
+            "$WORK_DIR/system/system/etc/apks_count_list.txt" \
+            "$WORK_DIR/system/system/etc/irremovable_list.txt"; do
+        [ -f "$GPU_LIST" ] || continue
+        EVAL "sed -i -e '/GameDriver-EX2400/d' -e '/DevGPUDriver-EX2400/d' \"$GPU_LIST\""
+        for GPU_FILE in \
+                "GameDriver-EX9830/GameDriver-EX9830.apk" \
+                "GameDriver-EX9830/GameDriver-EX9830.apk.prof" \
+                "DevGPUDriver-EX9830/DevGPUDriver-EX9830.apk" \
+                "DevGPUDriver-EX9830/DevGPUDriver-EX9830.apk.prof"; do
+            [ -f "$GPU_TARGET_FIRMWARE/system/system/priv-app/$GPU_FILE" ] || continue
+            GPU_LIST_ENTRY="/system/priv-app/$GPU_FILE"
+            grep -q -F "$GPU_LIST_ENTRY" "$GPU_LIST" || \
+                EVAL "printf '%s\\n' \"$GPU_LIST_ENTRY\" >> \"$GPU_LIST\""
+        done
+    done
+    unset GPU_ALLOWLIST GPU_LIST GPU_FILE GPU_LIST_ENTRY
+else
+    LOGW "- S20+ EX9830 GameDriver pair is not available; keeping the source driver stack"
+fi
+unset GPU_TARGET_FIRMWARE_PATH GPU_TARGET_FIRMWARE
 LOG_STEP_OUT
 
 LOG_STEP_IN "- Replacing Hotword"

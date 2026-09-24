@@ -55,6 +55,20 @@ if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 36 ]]; then
     LOG_STEP_OUT
 fi
 
+if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 37 ]]; then
+    LOG_STEP_IN "- Removing stale legacy OMX performance metadata"
+
+    # Android 17's codec-list generator no longer registers the legacy OMX
+    # performance entries from the Exynos 990 target.  Keeping this file makes
+    # it emit "cannot update non-existing codec" for every OMX entry.  The
+    # actual codec declarations remain in media_codecs.xml and the C2 metadata
+    # remains in media_codecs_c2_sec*.xml; only the obsolete performance
+    # overlay is removed.
+    DELETE_FROM_WORK_DIR "vendor" "etc/media_codecs_performance.xml"
+
+    LOG_STEP_OUT
+fi
+
 if ${SOURCE_USE_NATIVE_DISPLAY_STACK:-false}; then
     LOG "- Preserving native SurfaceFlinger timing and HFR properties"
 else
@@ -86,10 +100,110 @@ else
     LOG_STEP_OUT
 fi
 
-LOG_STEP_IN "- Enabling Vulkan"
-SET_PROP "vendor" "ro.hwui.use_vulkan" "true"
-SET_PROP "vendor" "debug.hwui.use_hint_manager" "true"
+LOG_STEP_IN "- Restoring the Exynos 990 HWUI backend"
+# The S24+ source vendor property forces Vulkan and Samsung's hint manager.
+# The S20+ target leaves HWUI's Vulkan selector empty and does not define the
+# hint-manager override.  Forcing the source values makes Chromium/social
+# workloads allocate the wrong GPU path; the capture then reaches 817-834 MB
+# of DMA-BUF, triggers LMKD low-watermark reclaim, and Codec2 reports
+# C2_NO_MEMORY ("system resources: 6").  Restore the target policy instead of
+# disabling GPU acceleration globally.
+VENDOR_BUILD_PROP="$WORK_DIR/vendor/build.prop"
+if [[ -f "$VENDOR_BUILD_PROP" ]]; then
+    # SET_PROP cannot distinguish an absent property from one whose value is
+    # deliberately empty.  Remove every occurrence first so a stale source
+    # value appended later in the file cannot override the target policy.
+    sed -i \
+        -e '/^ro\.hwui\.use_vulkan=/d' \
+        -e '/^debug\.hwui\.use_hint_manager=/d' \
+        "$VENDOR_BUILD_PROP"
+    printf '%s\n' 'ro.hwui.use_vulkan=' >> "$VENDOR_BUILD_PROP"
+fi
+unset VENDOR_BUILD_PROP
 LOG_STEP_OUT
+
+if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 37 ]]; then
+    LOG_STEP_IN "- Fixing legacy AVC HDR-static capability discovery"
+
+    # The Android 11 Exynos AVC decoder reports success for
+    # OMX.google.android.index.describeHDRStaticInfo during GetExtensionIndex,
+    # but its GetConfig/SetConfig implementations reject the returned index.
+    # Android 17 consequently performs the unsupported transaction at every
+    # AVC setup and port reconfiguration.  Skip only that false-positive match
+    # so the generic OMX fallback returns OMX_ErrorUnsupportedIndex.  HEVC is
+    # deliberately untouched because its HDR/HDR10+ path is functional.
+    AVC_DECODER_32="$WORK_DIR/vendor/lib/omx/libOMX.Exynos.AVC.Decoder.so"
+    AVC_DECODER_64="$WORK_DIR/vendor/lib64/omx/libOMX.Exynos.AVC.Decoder.so"
+
+    AVC_HDR_INDEX_32_FROM="0c129fe50500a0e101108fe0f07f00eb000050e35900000af8119fe5"
+    AVC_HDR_INDEX_32_TO="0c129fe50500a0e101108fe0f07f00eb000050e30000a0e1f8119fe5"
+    AVC_HDR_INDEX_64_FROM="61ffffb021fc3a91e00314aa35880094000f003441ffffd0"
+    AVC_HDR_INDEX_64_TO="61ffffb021fc3a91e00314aa358800941f2003d541ffffd0"
+
+    if [[ -f "$AVC_DECODER_32" ]]; then
+        if xxd -p -c 0 "$AVC_DECODER_32" | grep -q "$AVC_HDR_INDEX_32_FROM"; then
+            HEX_PATCH "$AVC_DECODER_32" "$AVC_HDR_INDEX_32_FROM" "$AVC_HDR_INDEX_32_TO"
+        elif ! xxd -p -c 0 "$AVC_DECODER_32" | grep -q "$AVC_HDR_INDEX_32_TO"; then
+            ABORT "Missing ARM32 Exynos AVC HDR-static discovery pattern"
+        fi
+    fi
+
+    if [[ -f "$AVC_DECODER_64" ]]; then
+        if xxd -p -c 0 "$AVC_DECODER_64" | grep -q "$AVC_HDR_INDEX_64_FROM"; then
+            HEX_PATCH "$AVC_DECODER_64" "$AVC_HDR_INDEX_64_FROM" "$AVC_HDR_INDEX_64_TO"
+        elif ! xxd -p -c 0 "$AVC_DECODER_64" | grep -q "$AVC_HDR_INDEX_64_TO"; then
+            ABORT "Missing ARM64 Exynos AVC HDR-static discovery pattern"
+        fi
+    fi
+
+    unset AVC_DECODER_32 AVC_DECODER_64 \
+        AVC_HDR_INDEX_32_FROM AVC_HDR_INDEX_32_TO \
+        AVC_HDR_INDEX_64_FROM AVC_HDR_INDEX_64_TO
+    LOG_STEP_OUT
+fi
+
+if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 36 ]]; then
+    # Android 17's source image ships the AIDL-only suspend daemon.  The
+    # Exynos 990 target still has vendor clients (gpsd/RIL/sensors) linked
+    # against android.system.suspend@1.0 HIDL, so those clients repeatedly
+    # fail ISystemSuspend::getService() when only the AIDL endpoint exists.
+    # Restore the target's dual HIDL+AIDL implementation without importing
+    # the target power HAL or changing the source power ABI.
+    TARGET_FW_ROOT="$FW_DIR/$(tr '/' '_' <<< "$TARGET_FIRMWARE")"
+    TARGET_SUSPEND_SERVICE="$TARGET_FW_ROOT/system/system/bin/hw/android.system.suspend@1.0-service"
+    TARGET_SUSPEND_HIDL="$TARGET_FW_ROOT/system/system/lib64/android.system.suspend@1.0.so"
+    TARGET_SUSPEND_PROPS="$TARGET_FW_ROOT/system/system/lib64/libSuspendProperties.so"
+    TARGET_SUSPEND_MANIFEST="$TARGET_FW_ROOT/system/system/etc/vintf/manifest/android.system.suspend@1.0-service.xml"
+
+    if [[ -f "$TARGET_SUSPEND_SERVICE" && -f "$TARGET_SUSPEND_HIDL" &&
+            -f "$TARGET_SUSPEND_PROPS" && -f "$TARGET_SUSPEND_MANIFEST" ]]; then
+        LOG_STEP_IN "- Restoring the target HIDL/AIDL system suspend bridge"
+        cp -a -T "$TARGET_SUSPEND_SERVICE" \
+            "$WORK_DIR/system/system/bin/hw/android.system.suspend-service" || return 1
+        SET_METADATA "system" "system/bin/hw/android.system.suspend-service" \
+            0 2000 755 "u:object_r:system_suspend_exec:s0" || return 1
+
+        ADD_TO_WORK_DIR "$TARGET_FIRMWARE" "system" \
+            "system/lib64/android.system.suspend@1.0.so" \
+            0 0 644 "u:object_r:system_lib_file:s0" || return 1
+        ADD_TO_WORK_DIR "$TARGET_FIRMWARE" "system" \
+            "system/lib64/libSuspendProperties.so" \
+            0 0 644 "u:object_r:system_lib_file:s0" || return 1
+
+        # The target manifest advertises both transports.  Keep the source
+        # filename so no stale AIDL-only manifest is left beside it.
+        cp -a -T "$TARGET_SUSPEND_MANIFEST" \
+            "$WORK_DIR/system/system/etc/vintf/manifest/android.system.suspend-service.xml" || return 1
+        SET_METADATA "system" "system/etc/vintf/manifest/android.system.suspend-service.xml" \
+            0 0 644 "u:object_r:system_file:s0" || return 1
+        LOG_STEP_OUT
+    else
+        LOG "  - Target has no dual suspend service; keeping the source AIDL service"
+    fi
+
+    unset TARGET_FW_ROOT TARGET_SUSPEND_SERVICE TARGET_SUSPEND_HIDL \
+        TARGET_SUSPEND_PROPS TARGET_SUSPEND_MANIFEST
+fi
 
 LOG "- Disabling encryption"
 LINE=$(sed -n "/^\/dev\/block\/by-name\/userdata/=" "$WORK_DIR/vendor/etc/fstab.exynos990")
