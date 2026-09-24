@@ -3059,3 +3059,25 @@ existing Lite 2x/3x/4x model assets from the `p3sxxx` prebuilt and explicitly
 associates the fallback entry with `Exynos 990`; the Photo Remaster APK and
 MIDAS engine/core libraries remain from the S24+ source stack. This is a
 static configuration change only; no build or flash has been run.
+
+## HDR10+ Exynos 990 encoder compatibility (2026-09-24)
+
+The Android 17 source `libstagefright.so` aborted HDR10+ recording modes 10/25.
+The first workaround escaped after the compiler had reused `x19` for the
+`ACodec` log tag, corrupting the `ACodec *this` pointer. The platform camera
+module now redirects both fatal-block entries before that clobber and restores
+the experimental CFI/process-cache modifications in incremental work dirs.
+
+After that correction, `MediaRecorder::prepare()` failed with `-61`
+(`ENODATA`). Android 17 requested HEVC profile `0x2000`
+(`Main10HDR10Plus`), while the Android 11 Exynos 990 OMX encoder enumerates
+only Main (`1`), Main10 (`2`) and Main10HDR10 (`0x1000`). The camera module now
+uses the unreachable fatal block as a guarded trampoline that translates only
+`0x2000` to `0x1000` for legacy OMX verification/configuration; other HEVC
+profiles are unchanged.
+
+The resulting branch/trampoline bytes were verified by disassembly, and the
+script passed `bash -n` and `git diff --check`. The ROM was subsequently built,
+installed and tested by the maintainer: HDR10+ recording is functional and the
+`configureCodec returning error -61` failure is resolved. Preserve this patch
+while the Exynos 990 Android 11 OMX stack is paired with Android 17 Stagefright.

@@ -109,6 +109,96 @@ else
     HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
         "e10f40b9e28b40b9e00313aa11f7059400020034fa03002a" \
         "e10f40b9e28b40b9e00313aa11f7059410000014fa03002a"
+
+    # Android 17 asks for OMX_VIDEO_HEVCProfileMain10HDR10Plus (0x2000), but
+    # the Exynos 990 Android 11 OMX component advertises Main, Main10 and
+    # Main10HDR10 only (0x1, 0x2 and 0x1000).  Its profile enumeration then
+    # returns OMX_ErrorNoMore, surfaced by Stagefright as -ENODATA (-61), and
+    # MediaRecorder reports that the recording could not be saved.
+    #
+    # Reuse the unreachable Android 17 HDR10+ fatal block as a six-instruction
+    # trampoline.  setupHEVCEncoderParameters enters it only while loading the
+    # requested profile; 0x2000 is translated to the legacy component's
+    # 0x1000 for verification and OMX configuration, while every other HEVC
+    # profile is left untouched.  Both original fatal-block entries branch to
+    # the normal setup path before x19 can be reused as the "ACodec" log tag.
+    HDR10P_BRIDGE_FROM="48008052e8af00b9f3fbfff073da099182fbfff042143391c0008052e10313aa7cf20594e0fbffb0"
+    HDR10P_BRIDGE_OLD="48008052e8af00b9cafdff1773da099182fbfff042143391c0008052e10313aa7cf20594e0fbffb0"
+    HDR10P_BRIDGE_TO="ccfdff17e8af00b9cafdff1773da0991a2035eb85f0840716100005402008252a2031eb87a110014"
+    if xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_BRIDGE_FROM"; then
+        HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
+            "$HDR10P_BRIDGE_FROM" "$HDR10P_BRIDGE_TO"
+    elif xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_BRIDGE_OLD"; then
+        HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
+            "$HDR10P_BRIDGE_OLD" "$HDR10P_BRIDGE_TO"
+    elif ! xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_BRIDGE_TO"; then
+        ABORT "Missing Android 17 HDR10+ profile-bridge code-cave pattern"
+    fi
+
+    HDR10P_PROFILE_FROM="a2035eb8e30340b9e00313aa21008052"
+    HDR10P_PROFILE_TO="82eeff17e30340b9e00313aa21008052"
+    if xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_PROFILE_FROM"; then
+        HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
+            "$HDR10P_PROFILE_FROM" "$HDR10P_PROFILE_TO"
+    elif ! xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_PROFILE_TO"; then
+        ABORT "Missing Android 17 HEVC profile-load trampoline pattern"
+    fi
+
+    # Migrate incremental work directories made with the superseded
+    # experiment.  Those variants escaped after x19 was already clobbered and
+    # disabled valid CFI checks, changing the original abort into SIGSEGV.
+    HDR10P_ASSERT_FROM="e3fbff9063d40d91e10313aa4ef40594203a8bd2"
+    HDR10P_ASSERT_NOP="e3fbff9063d40d91e10313aa1f2003d5203a8bd2"
+    HDR10P_ASSERT_OLD="e3fbff9063d40d91e10313aa46feff17203a8bd2"
+    if xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_ASSERT_OLD"; then
+        HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
+            "$HDR10P_ASSERT_OLD" "$HDR10P_ASSERT_FROM"
+    elif xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_ASSERT_NOP"; then
+        HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
+            "$HDR10P_ASSERT_NOP" "$HDR10P_ASSERT_FROM"
+    elif ! xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_ASSERT_FROM"; then
+        ABORT "Missing Android 17 HDR10+ assert restoration pattern"
+    fi
+
+    HDR10P_CFI_RESTORE_PATTERNS="
+a08315b83f0008eb01350054e2830291e103002ad6f7059420040035e0430091e1830291|a08315b83f0008eb1f2003d5e2830291e103002ad6f7059420040035e0430091e1830291
+21310054e00313aae10314aae20317aabbf705942b0000143f0f0071|1f2003d5e00313aae10314aae20317aabbf705942b0000143f0f0071
+a1300054e00313aae10314aaa6f705941c000014610240f9a80c00b0|1f2003d5e00313aae10314aaa6f705941c000014610240f9a80c00b0
+c12e0054e00313aae10314aae20317aaa8f7059412000014610240f9|1f2003d5e00313aae10314aae20317aaa8f7059412000014610240f9
+012f0054e00313aae10314aa8df7059409000014610240f9a80c00b0|1f2003d5e00313aae10314aa8df7059409000014610240f9a80c00b0
+a12e0054e00313aae10314aa7ef70594fa03002a8023003500e4006f|1f2003d5e00313aae10314aa7ef70594fa03002a8023003500e4006f
+41220054e00313aae10314aae20317aae30318aa1ff70594a0010034|1f2003d5e00313aae10314aae20317aae30318aa1ff70594a0010034
+21200054e00313aae1031f2ae20314aae30317aaeaf60594a0010034|1f2003d5e00313aae1031f2ae20314aae30317aaeaf60594a0010034
+c1100054789a40f980698ad277c20b91|1f2003d5789a40f980698ad277c20b91
+e10a005468f242b9e1530091e2030091|1f2003d568f242b9e1530091e2030091
+21060054e1530091e00313aa22008052|1f2003d5e1530091e00313aa22008052
+41050054e1530091e00313aa22008052|1f2003d5e1530091e00313aa22008052
+210a0054769a40f994698ad275d20b91|1f2003d5769a40f994698ad275d20b91
+61060054b50240b935030034769a40f9|1f2003d5b50240b935030034769a40f9
+"
+    while IFS='|' read -r HDR10P_CFI_ORIGINAL HDR10P_CFI_OLD; do
+        [ "$HDR10P_CFI_ORIGINAL" ] || continue
+        if xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_CFI_OLD"; then
+            HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
+                "$HDR10P_CFI_OLD" "$HDR10P_CFI_ORIGINAL"
+        elif ! xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_CFI_ORIGINAL"; then
+            ABORT "Missing Android 17 ACodec CFI restoration pattern"
+        fi
+    done <<< "$HDR10P_CFI_RESTORE_PATTERNS"
+
+    HDR10P_PROCESS_CACHE_FROM="a88355b81f0100718c05005497fa0594610240f9a80c00b0"
+    HDR10P_PROCESS_CACHE_OLD="a88355b81f0100718c0500542b000014610240f9a80c00b0"
+    if xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_PROCESS_CACHE_OLD"; then
+        HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
+            "$HDR10P_PROCESS_CACHE_OLD" "$HDR10P_PROCESS_CACHE_FROM"
+    elif ! xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_PROCESS_CACHE_FROM"; then
+        ABORT "Missing Android 17 ACodec process-cache restoration pattern"
+    fi
+    unset HDR10P_BRIDGE_FROM HDR10P_BRIDGE_OLD HDR10P_BRIDGE_TO \
+        HDR10P_PROFILE_FROM HDR10P_PROFILE_TO \
+        HDR10P_ASSERT_FROM HDR10P_ASSERT_NOP HDR10P_ASSERT_OLD \
+        HDR10P_CFI_RESTORE_PATTERNS HDR10P_CFI_ORIGINAL HDR10P_CFI_OLD \
+        HDR10P_PROCESS_CACHE_FROM HDR10P_PROCESS_CACHE_OLD
 fi
 LOG_STEP_OUT
 
