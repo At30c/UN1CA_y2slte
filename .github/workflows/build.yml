@@ -51,23 +51,12 @@ jobs:
 
       - name: Set up build environment
         run: |
-          sudo apt update
-          DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
-            attr ccache clang ffmpeg libbrotli-dev libbz2-dev \
-            libgtest-dev libprotobuf-dev libunwind-dev libpcre2-dev \
-            libzstd-dev linux-modules-extra-$(uname -r) lld protobuf-compiler webp \
-            build-essential g++-aarch64-linux-gnu gcc-aarch64-linux-gnu \
-            python-is-python3 python3 wget curl
-
+          sudo apt update && sudo apt install -yq attr bc bison build-essential python3-pip 7zip brotli patchelf openjdk-21-jdk ccache clang curl ffmpeg flex g++ g++-aarch64-linux-gnu gcc-aarch64-linux-gnu curl git git-lfs gnupg gperf imagemagick kmod lld lib32readline-dev lib32z1-dev libbrotli-dev libbz2-dev libgtest-dev liblz4-dev liblz4-tool libncurses5-dev libpcre2-dev libprotobuf-dev libssl-dev libunwind-dev libxml2 libxml2-utils libzstd-dev linux-modules-extra-$(uname -r) libsdl1.2-dev lzop pngcrush protobuf-compiler python-is-python3 rsync schedtool squashfs-tools webp wget xsltproc zip zlib1g-dev
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           source "$HOME/.cargo/env"
-
-          rustc --version
-          cargo --version
-
           wget https://raw.githubusercontent.com/kdrag0n/kramflash/refs/heads/master/mkbootimg.py && sudo ln -sf $(pwd)/mkbootimg.py /usr/bin/mkbootimg && chmod +x /usr/bin/mkbootimg
-
           sudo modprobe erofs f2fs
+          pip3 install gdown --break-system-packages
 
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -81,8 +70,14 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: Build dependencies
+      - name: Build dependencies and download oneui9 beta
         run: |
+          mkdir -p out/odin
+          cd out/odin
+          gdown https://drive.google.com/uc\?id\=1vmVtu542y3ORsmj_yNsWA0k2Z5x77JDI
+          unzip S24+_ONEUI9_ZZHL-ZZI4_BY_@miguelbarretoo.zip
+          rm S24+_ONEUI9_ZZHL-ZZI4_BY_@miguelbarretoo.zip 
+          cd ../..
           source ./buildenv.sh ${{ matrix.target }}
           ./scripts/build_dependencies.sh
 
