@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 UN1CA contributors
-# SPDX-License-Identifier: Apache-2.0
 #
 # Restores HDR10+ HEVC recording on the Exynos 990 media stack.
 #
