@@ -64,7 +64,38 @@ patchelf --add-needed "libc++_shared.so" "$WORK_DIR/system/system/lib64/libMulti
 LOG_STEP_OUT
 
 LOG_STEP_IN "- Removing HDR10+ check"
+
+# Android 16 and 17 ask for OMX_VIDEO_HEVCProfileMain10HDR10Plus (0x2000), but
+# the Exynos 990 OMX component shipped in the target vendor partition only
+# advertises Main, Main10 and Main10HDR10 (0x1, 0x2 and 0x1000).  Its profile
+# enumeration then returns OMX_ErrorNoMore, which Stagefright surfaces as
+# -ENODATA (-61) and MediaRecorder reports as a recording that could not be
+# saved.
+#
+# patch_hdr10plus_profile.py reuses the unreachable HDR10+ fatal block of
+# setupVideoEncoder as a six instruction trampoline and rewrites only the
+# profile copy in setupHEVCEncoderParameters, so 0x2000 is translated to the
+# legacy 0x1000 for profile verification and OMX configuration while every
+# other HEVC profile is left untouched.  Both places are located by decoding
+# the instructions around them, so the patch is not bound to one donor build
+# and covers every Exynos 990 target that shares this source media stack.
+# <expected-shape> is the slot the given source generation is known to use and
+# only guards against patching a mismatched donor.
+HDR10P_BRIDGE_PATCH()
+{
+    local EXPECTED_SHAPE="$1"
+    local LIBRARY="$WORK_DIR/system/system/lib64/libstagefright.so"
+
+    if ! python3 "$SRC_DIR/platform/exynos990/patches/camera/patch_hdr10plus_profile.py" \
+        --expect-shape "$EXPECTED_SHAPE" "$LIBRARY"; then
+        ABORT "Could not install the HDR10+ profile bridge, see the error above"
+    fi
+}
+
 if [[ "$SOURCE_PLATFORM_SDK_VERSION" -lt 36 ]]; then
+    # Pre-Android 16 sources pair with the matching legacy media stack, whose
+    # HDR10+ rejection is a plain guard in front of the fatal block instead of
+    # the profile copy patched above, so keep neutralising that guard here.
     ADD_TO_WORK_DIR "pa3qzcx" "system" "system/lib64/libstagefright.so" 0 0 644 "u:object_r:system_lib_file:s0"
     HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
         "010140f97069059420510034" \
@@ -73,7 +104,6 @@ elif [[ "$SOURCE_PLATFORM_SDK_VERSION" -eq 36 ]]; then
     # Android 16 changed the Camera::connect ABI. Replacing this library with
     # the older pa3qzcx blob makes zygote, cameraserver and the media services
     # fail at link time, so retain the source firmware's matched media stack.
-    LOG "Skipping legacy HDR10+ blob on Android 16"
     ADD_TO_WORK_DIR "$SOURCE_FIRMWARE" "system" \
         "system/lib64/libstagefright.so" 0 0 644 \
         "u:object_r:system_lib_file:s0"
@@ -94,6 +124,8 @@ elif [[ "$SOURCE_PLATFORM_SDK_VERSION" -eq 36 ]]; then
     HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
         "e10740b9e22340b9e00313aa44aa059420020034fa03002a" \
         "e10740b9e22340b9e00313aa44aa059411000014fa03002a"
+
+    HDR10P_BRIDGE_PATCH "stack"
 else
     # Android 17 moved both call sites while preserving their semantics.
     # MediaCodecSource::suspendRecording(bool) remains a no-op, so start the
@@ -109,40 +141,6 @@ else
     HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
         "e10f40b9e28b40b9e00313aa11f7059400020034fa03002a" \
         "e10f40b9e28b40b9e00313aa11f7059410000014fa03002a"
-
-    # Android 17 asks for OMX_VIDEO_HEVCProfileMain10HDR10Plus (0x2000), but
-    # the Exynos 990 Android 11 OMX component advertises Main, Main10 and
-    # Main10HDR10 only (0x1, 0x2 and 0x1000).  Its profile enumeration then
-    # returns OMX_ErrorNoMore, surfaced by Stagefright as -ENODATA (-61), and
-    # MediaRecorder reports that the recording could not be saved.
-    #
-    # Reuse the unreachable Android 17 HDR10+ fatal block as a six-instruction
-    # trampoline.  setupHEVCEncoderParameters enters it only while loading the
-    # requested profile; 0x2000 is translated to the legacy component's
-    # 0x1000 for verification and OMX configuration, while every other HEVC
-    # profile is left untouched.  Both original fatal-block entries branch to
-    # the normal setup path before x19 can be reused as the "ACodec" log tag.
-    HDR10P_BRIDGE_FROM="48008052e8af00b9f3fbfff073da099182fbfff042143391c0008052e10313aa7cf20594e0fbffb0"
-    HDR10P_BRIDGE_OLD="48008052e8af00b9cafdff1773da099182fbfff042143391c0008052e10313aa7cf20594e0fbffb0"
-    HDR10P_BRIDGE_TO="ccfdff17e8af00b9cafdff1773da0991a2035eb85f0840716100005402008252a2031eb87a110014"
-    if xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_BRIDGE_FROM"; then
-        HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
-            "$HDR10P_BRIDGE_FROM" "$HDR10P_BRIDGE_TO"
-    elif xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_BRIDGE_OLD"; then
-        HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
-            "$HDR10P_BRIDGE_OLD" "$HDR10P_BRIDGE_TO"
-    elif ! xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_BRIDGE_TO"; then
-        ABORT "Missing Android 17 HDR10+ profile-bridge code-cave pattern"
-    fi
-
-    HDR10P_PROFILE_FROM="a2035eb8e30340b9e00313aa21008052"
-    HDR10P_PROFILE_TO="82eeff17e30340b9e00313aa21008052"
-    if xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_PROFILE_FROM"; then
-        HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
-            "$HDR10P_PROFILE_FROM" "$HDR10P_PROFILE_TO"
-    elif ! xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_PROFILE_TO"; then
-        ABORT "Missing Android 17 HEVC profile-load trampoline pattern"
-    fi
 
     # Migrate incremental work directories made with the superseded
     # experiment.  Those variants escaped after x19 was already clobbered and
@@ -194,8 +192,22 @@ e10a005468f242b9e1530091e2030091|1f2003d568f242b9e1530091e2030091
     elif ! xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_PROCESS_CACHE_FROM"; then
         ABORT "Missing Android 17 ACodec process-cache restoration pattern"
     fi
-    unset HDR10P_BRIDGE_FROM HDR10P_BRIDGE_OLD HDR10P_BRIDGE_TO \
-        HDR10P_PROFILE_FROM HDR10P_PROFILE_TO \
+
+    # That same experiment rewrote only the second fatal block entry, leaving
+    # the block unusable for the trampoline.  Put the stock instructions back
+    # so the bridge below starts from an untouched donor.
+    HDR10P_BRIDGE_STOCK="48008052e8af00b9f3fbfff073da099182fbfff042143391c0008052e10313aa7cf20594e0fbffb0"
+    HDR10P_BRIDGE_PARTIAL="48008052e8af00b9cafdff1773da099182fbfff042143391c0008052e10313aa7cf20594e0fbffb0"
+    HDR10P_BRIDGE_DONE="ccfdff17e8af00b9cafdff1773da0991a2035eb85f0840716100005402008252a2031eb87a110014"
+    if xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -q "$HDR10P_BRIDGE_PARTIAL"; then
+        HEX_PATCH "$WORK_DIR/system/system/lib64/libstagefright.so" \
+            "$HDR10P_BRIDGE_PARTIAL" "$HDR10P_BRIDGE_STOCK"
+    elif ! xxd -p -c 0 "$WORK_DIR/system/system/lib64/libstagefright.so" | grep -qE "$HDR10P_BRIDGE_STOCK|$HDR10P_BRIDGE_DONE"; then
+        ABORT "Missing Android 17 HDR10+ fatal block pattern"
+    fi
+
+    HDR10P_BRIDGE_PATCH "frame"
+    unset HDR10P_BRIDGE_STOCK HDR10P_BRIDGE_PARTIAL HDR10P_BRIDGE_DONE \
         HDR10P_ASSERT_FROM HDR10P_ASSERT_NOP HDR10P_ASSERT_OLD \
         HDR10P_CFI_RESTORE_PATTERNS HDR10P_CFI_ORIGINAL HDR10P_CFI_OLD \
         HDR10P_PROCESS_CACHE_FROM HDR10P_PROCESS_CACHE_OLD

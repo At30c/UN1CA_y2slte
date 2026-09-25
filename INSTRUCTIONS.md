@@ -3464,6 +3464,87 @@ failure while preserving the vendor HDR10+ recording path. Keep the guarded
 fatal-block/profile trampoline in the Exynos 990 camera module; it is no longer
 an unverified diagnostic experiment.
 
+### HDR10+ profile bridge made layout independent (2026-09-25)
+
+The device-confirmed bridge was hardcoded as byte patterns for one donor build.
+That is correct but brittle: the patterns only exist if the source firmware
+keeps the same instruction sequence, and the `== 36` source branch had no
+bridge at all, so a build taken from the SDK 36 source kept the `-61`
+negotiation failure silently. `libstagefright.so` is a source-firmware
+library, not a target one, so the fix has to be resolved from whatever binary
+the build copies in, not from a per-target list.
+
+The branch is chosen by `SOURCE_PLATFORM_SDK_VERSION`, which describes the
+*source* configuration and not the target device:
+
+| source config | donor | `SOURCE_PLATFORM_SDK_VERSION` | shape |
+| --- | --- | --- | --- |
+| `unica/configs/essi.sh` | S24+ (Exynos 2400) | 37 | `frame` (`ldur`) |
+| `unica/configs/qssi.sh` | S22 (Snapdragon) | 36 | `stack` (`ldr`) |
+
+Both branches install the bridge, so every Exynos 990 target (`x1s`, `y2s`,
+`y2slte`, `z3s`, `c1s`, `c2s`, `r8s`) is covered regardless of which source it
+was built from, and each one gets the shape its own donor actually uses. Only
+the `essi` path has been confirmed on a device; the `qssi` path is validated
+statically.
+
+`platform/exynos990/patches/camera/patch_hdr10plus_profile.py` replaces the
+static patterns. It parses the ELF program headers, decodes the AArch64
+instructions around both places and computes the absolute branches at patch
+time:
+
+* the profile copy in `ACodec::setupHEVCEncoderParameters()`, recognised by the
+  requested-profile load followed by the `mov x0, x19 / mov w1, #1` OMX call
+  setup, in either the One UI 9 callee-frame form (`ldur w2, [x29, #-0x20]`)
+  or the One UI 8 stack form (`ldr w2, [sp, #8]`);
+* the HDR10+ fatal block in `ACodec::setupVideoEncoder()`, recognised by the
+  error-code store, the `ACodec` log-tag pair and the level-6 assert, whose
+  assert-message setup becomes the six-instruction trampoline;
+* the block entries, found as every branch target inside that block, and the
+  normal continuation, taken as the fall-through of the guard that jumps to the
+  last entry, so the reused assert is bypassed before x19 is clobbered.
+
+Uniqueness is required, not assumed: an absent, ambiguous or unrecognised
+layout aborts the build with a message naming the problem instead of silently
+leaving HDR10+ broken, which is what the old `Skipping legacy HDR10+ blob on
+Android 16` log did on the `qssi` path. A work directory that carries the
+bridge on only some of the profile copies it contains is rejected for the same
+reason, so a half-migrated directory cannot be reported as already done. The
+trampoline is re-decoded after writing, a blob that already carries a valid
+bridge everywhere is left untouched, and `--expect-shape` warns when the donor
+does not match the slot the declared source generation is known to use. The
+profile load and its matching store are carried over from the donor, so any
+slot offset the source generation uses is handled without a hardcoded
+immediate.
+
+Verified on the `essi` donor in `out/fw` and on a `qssi` build's blob in
+`out/target/x1s/work_dir`:
+
+* the `essi` donor resolves the profile copy at `0xf10a8`, the trampoline at
+  `0xecab0`, the resume at `0xf10ac` and both fatal entries to `0xec1d0`, and
+  the result is byte-for-byte identical to the previous static patch;
+* the `qssi` blob resolves the profile copy at `0xeab9c`, the trampoline at
+  `0xe643c`, the resume at `0xeaba0` and both fatal entries to `0xe5a8c`, with
+  the profile kept in the stack slot;
+* rerunning the step on an already patched work directory changes no bytes and
+  reports the existing bridge;
+* a work directory carrying the superseded partial fatal-entry patch is
+  normalised back to the stock block by the migration in `customize.sh` before
+  the bridge runs, and converges to the same final blob;
+* with the profile copy blanked out on purpose, the step reports the missing
+  copy and returns non-zero, so `set -e` in `scripts/internal/apply_modules.sh`
+  stops the build; the same holds for a non-ELF file, a partially overwritten
+  block and a work directory with the bridge on only part of its copies.
+
+The `< 36` branch keeps its own guard neutralisation: that older media stack
+rejects HDR10+ with a plain check in front of the fatal block instead of the
+profile copy, and it has no equivalent of the six-instruction block the bridge
+reuses. That path was left as it is, and `python3 -m py_compile`, `bash -n`
+and `git diff --check` pass. No ROM build or flash was run after the helper
+replaced the static patterns; the `qssi` bridge in particular is validated
+statically only and still needs an installed-build test that confirms a saved
+HEVC file carries HDR10+ dynamic metadata.
+
 ### SecSettings crash while selecting apps to hide Developer options (2026-09-24)
 
 The crash was reproduced when opening the app-selection screen used by the
