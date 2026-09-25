@@ -56,6 +56,85 @@ if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 36 ]]; then
 fi
 
 if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 37 ]]; then
+    LOG_STEP_IN "- Aligning SLMK swap watermark with Android 17 RAM Plus"
+
+    # Android 17's SLMKD re-evaluates its free-swap watermark after RAM Plus
+    # has expanded zram.  The Exynos 990 target build.prop has no explicit
+    # swap_free_low_percentage, so SLMKD falls back to 55 and then derives
+    # 86% from the 8 GiB runtime zram device.  LMKD consequently kills cached
+    # apps while more than 7 GiB of swap is still free.  The S24+ source
+    # policy explicitly uses 10% for both SLMK policies; retain that policy
+    # when the target vendor properties replace the source build.prop.  This
+    # changes only the reclaim watermark, not zram capacity or OOM scores.
+    SET_PROP "vendor" "ro.slmk.swap_free_low_percentage" "10"
+    SET_PROP "vendor" "ro.slmk.2nd.swap_free_low_percentage" "10"
+
+    LOG_STEP_OUT
+
+    LOG_STEP_IN "- Disabling unsupported Codec2 availability accounting"
+
+    # Android 17 enables codec_availability_metrics and consequently queries
+    # C2ResourcesCapacityTuning/C2ResourcesExcludedTuning on the component
+    # store and C2ResourcesNeededTuning on every component.  Those proposed
+    # parameters are absent from the legacy Exynos 990 Codec2 HIDL 1.0 stack,
+    # which correctly returns C2_BAD_INDEX (ENXIO, status 6).  Make only the
+    # two optional accounting routines return an empty resource set/success,
+    # matching CCodec's feature-disabled fallback.  Actual codec creation,
+    # buffer allocation and allocation failures remain untouched.
+    C2_PLUGIN_32="$WORK_DIR/system/system/lib/libsfplugin_ccodec.so"
+    C2_PLUGIN_64="$WORK_DIR/system/system/lib64/libsfplugin_ccodec.so"
+
+    # ARM32 CCodecResources::queryRequiredResources(): return OK.
+    C2_REQUIRED_32_FROM="f0b58db004464d4878440068"
+    C2_REQUIRED_32_TO="0020704704464d4878440068"
+    # ARM32 queryGlobalResources(): initialize the returned vector to empty.
+    C2_GLOBAL_32_FROM="2de9f04f9fb0e1490646dff8"
+    C2_GLOBAL_32_TO="00210160416081607047dff8"
+
+    # ARM64 CCodecResources::queryRequiredResources(): return OK.
+    C2_REQUIRED_64_FROM="3f2303d5ff0302d1fd7b05a9f53300f9f44f07a9fd430191f30300aa340040f9"
+    C2_REQUIRED_64_TO="e0031f2ac0035fd6fd7b05a9f53300f9f44f07a9fd430191f30300aa340040f9"
+    # ARM64 queryGlobalResources(): initialize the returned vector to empty.
+    C2_GLOBAL_64_FROM="3f2303d5ff8304d1fd7b0ca9fc6f0da9fa670ea9f85f0fa9f65710a9f44f11a9fd030391f30308aaa0fafff000f03491"
+    C2_GLOBAL_64_TO="1f7d00a91f0900f9e0031f2ac0035fd6fa670ea9f85f0fa9f65710a9f44f11a9fd030391f30308aaa0fafff000f03491"
+
+    if [[ -f "$C2_PLUGIN_32" ]]; then
+        if xxd -p -c 0 "$C2_PLUGIN_32" | grep -q "$C2_REQUIRED_32_FROM"; then
+            HEX_PATCH "$C2_PLUGIN_32" \
+                "$C2_REQUIRED_32_FROM" "$C2_REQUIRED_32_TO" || return 1
+        elif ! xxd -p -c 0 "$C2_PLUGIN_32" | grep -q "$C2_REQUIRED_32_TO"; then
+            ABORT "Missing ARM32 Codec2 required-resource query pattern"
+        fi
+        if xxd -p -c 0 "$C2_PLUGIN_32" | grep -q "$C2_GLOBAL_32_FROM"; then
+            HEX_PATCH "$C2_PLUGIN_32" \
+                "$C2_GLOBAL_32_FROM" "$C2_GLOBAL_32_TO" || return 1
+        elif ! xxd -p -c 0 "$C2_PLUGIN_32" | grep -q "$C2_GLOBAL_32_TO"; then
+            ABORT "Missing ARM32 Codec2 global-resource query pattern"
+        fi
+    fi
+
+    if [[ -f "$C2_PLUGIN_64" ]]; then
+        if xxd -p -c 0 "$C2_PLUGIN_64" | grep -q "$C2_REQUIRED_64_FROM"; then
+            HEX_PATCH "$C2_PLUGIN_64" \
+                "$C2_REQUIRED_64_FROM" "$C2_REQUIRED_64_TO" || return 1
+        elif ! xxd -p -c 0 "$C2_PLUGIN_64" | grep -q "$C2_REQUIRED_64_TO"; then
+            ABORT "Missing ARM64 Codec2 required-resource query pattern"
+        fi
+        if xxd -p -c 0 "$C2_PLUGIN_64" | grep -q "$C2_GLOBAL_64_FROM"; then
+            HEX_PATCH "$C2_PLUGIN_64" \
+                "$C2_GLOBAL_64_FROM" "$C2_GLOBAL_64_TO" || return 1
+        elif ! xxd -p -c 0 "$C2_PLUGIN_64" | grep -q "$C2_GLOBAL_64_TO"; then
+            ABORT "Missing ARM64 Codec2 global-resource query pattern"
+        fi
+    fi
+
+    unset C2_PLUGIN_32 C2_PLUGIN_64 \
+        C2_REQUIRED_32_FROM C2_REQUIRED_32_TO \
+        C2_GLOBAL_32_FROM C2_GLOBAL_32_TO \
+        C2_REQUIRED_64_FROM C2_REQUIRED_64_TO \
+        C2_GLOBAL_64_FROM C2_GLOBAL_64_TO
+    LOG_STEP_OUT
+
     LOG_STEP_IN "- Removing stale legacy OMX performance metadata"
 
     # Android 17's codec-list generator no longer registers the legacy OMX
@@ -105,9 +184,9 @@ LOG_STEP_IN "- Restoring the Exynos 990 HWUI backend"
 # The S20+ target leaves HWUI's Vulkan selector empty and does not define the
 # hint-manager override.  Forcing the source values makes Chromium/social
 # workloads allocate the wrong GPU path; the capture then reaches 817-834 MB
-# of DMA-BUF, triggers LMKD low-watermark reclaim, and Codec2 reports
-# C2_NO_MEMORY ("system resources: 6").  Restore the target policy instead of
-# disabling GPU acceleration globally.
+# of DMA-BUF and triggers LMKD low-watermark reclaim.  Restore the target
+# policy instead of disabling GPU acceleration globally.  Codec2 status 6 is
+# separately handled above as C2_BAD_INDEX, not as an out-of-memory result.
 VENDOR_BUILD_PROP="$WORK_DIR/vendor/build.prop"
 if [[ -f "$VENDOR_BUILD_PROP" ]]; then
     # SET_PROP cannot distinguish an absent property from one whose value is
@@ -169,17 +248,36 @@ if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 36 ]]; then
     # fail ISystemSuspend::getService() when only the AIDL endpoint exists.
     # Restore the target's dual HIDL+AIDL implementation without importing
     # the target power HAL or changing the source power ABI.
-    TARGET_FW_ROOT="$FW_DIR/$(tr '/' '_' <<< "$TARGET_FIRMWARE")"
+    # Firmware extraction directories use only MODEL_CSC.  TARGET_FIRMWARE
+    # also contains the serial number (MODEL/CSC/SERIAL), so replacing every
+    # slash with an underscore resolves to a directory that can never exist
+    # (for example SM-G986B_AUT_359...).  Keep this in sync with
+    # scripts/make_rom.sh and scripts/internal/create_work_dir.sh.
+    TARGET_FIRMWARE_MODEL="$(cut -d "/" -f 1 -s <<< "$TARGET_FIRMWARE")"
+    TARGET_FIRMWARE_CSC="$(cut -d "/" -f 2 -s <<< "$TARGET_FIRMWARE")"
+    TARGET_FW_ROOT="$FW_DIR/${TARGET_FIRMWARE_MODEL}_${TARGET_FIRMWARE_CSC}"
     TARGET_SUSPEND_SERVICE="$TARGET_FW_ROOT/system/system/bin/hw/android.system.suspend@1.0-service"
     TARGET_SUSPEND_HIDL="$TARGET_FW_ROOT/system/system/lib64/android.system.suspend@1.0.so"
     TARGET_SUSPEND_PROPS="$TARGET_FW_ROOT/system/system/lib64/libSuspendProperties.so"
+    TARGET_SUSPEND_LIBBASE="$TARGET_FW_ROOT/system/system/lib64/libbase.so"
+    TARGET_SUSPEND_CONTROL="$TARGET_FW_ROOT/system/system/lib64/android.system.suspend.control-V1-cpp.so"
     TARGET_SUSPEND_MANIFEST="$TARGET_FW_ROOT/system/system/etc/vintf/manifest/android.system.suspend@1.0-service.xml"
+    SUSPEND_COMPAT_LIBBASE="$WORK_DIR/system/system/lib64/libbase_suspend_compat.so"
+    SUSPEND_COMPAT_CONTROL="$WORK_DIR/system/system/lib64/android.system.suspend.control-V1-cpp-compat.so"
+    SUSPEND_OUTPUT_SERVICE="$WORK_DIR/system/system/bin/hw/android.system.suspend-service"
 
-    if [[ -f "$TARGET_SUSPEND_SERVICE" && -f "$TARGET_SUSPEND_HIDL" &&
-            -f "$TARGET_SUSPEND_PROPS" && -f "$TARGET_SUSPEND_MANIFEST" ]]; then
+    if [[ -n "$TARGET_FIRMWARE_MODEL" && -n "$TARGET_FIRMWARE_CSC" &&
+            -f "$TARGET_SUSPEND_SERVICE" && -f "$TARGET_SUSPEND_HIDL" &&
+            -f "$TARGET_SUSPEND_PROPS" && -f "$TARGET_SUSPEND_LIBBASE" &&
+            -f "$TARGET_SUSPEND_CONTROL" && -f "$TARGET_SUSPEND_MANIFEST" ]]; then
         LOG_STEP_IN "- Restoring the target HIDL/AIDL system suspend bridge"
+        if ! command -v patchelf > /dev/null 2>&1; then
+            ABORT "patchelf is required for the target suspend compatibility stack"
+            return 1
+        fi
+
         cp -a -T "$TARGET_SUSPEND_SERVICE" \
-            "$WORK_DIR/system/system/bin/hw/android.system.suspend-service" || return 1
+            "$SUSPEND_OUTPUT_SERVICE" || return 1
         SET_METADATA "system" "system/bin/hw/android.system.suspend-service" \
             0 2000 755 "u:object_r:system_suspend_exec:s0" || return 1
 
@@ -190,6 +288,31 @@ if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 36 ]]; then
             "system/lib64/libSuspendProperties.so" \
             0 0 644 "u:object_r:system_lib_file:s0" || return 1
 
+        # Android 17 changed libbase's string API and the C++ Binder layout of
+        # suspend_control.  Loading the Android 13 daemon against the source
+        # libraries would therefore fail before main() with unresolved
+        # WriteStringToFd/Trim and BnSuspendControlService thunk symbols.
+        # Give only these two target libraries private SONAMEs and redirect the
+        # daemon to them; replacing the global source libraries would break
+        # unrelated Android 17 processes.
+        cp -a -T "$TARGET_SUSPEND_LIBBASE" "$SUSPEND_COMPAT_LIBBASE" || return 1
+        cp -a -T "$TARGET_SUSPEND_CONTROL" "$SUSPEND_COMPAT_CONTROL" || return 1
+        patchelf --set-soname "libbase_suspend_compat.so" \
+            "$SUSPEND_COMPAT_LIBBASE" || return 1
+        patchelf --set-soname "android.system.suspend.control-V1-cpp-compat.so" \
+            "$SUSPEND_COMPAT_CONTROL" || return 1
+        patchelf --replace-needed "libbase.so" "libbase_suspend_compat.so" \
+            "$SUSPEND_OUTPUT_SERVICE" || return 1
+        patchelf --replace-needed \
+            "android.system.suspend.control-V1-cpp.so" \
+            "android.system.suspend.control-V1-cpp-compat.so" \
+            "$SUSPEND_OUTPUT_SERVICE" || return 1
+        SET_METADATA "system" "system/lib64/libbase_suspend_compat.so" \
+            0 0 644 "u:object_r:system_lib_file:s0" || return 1
+        SET_METADATA "system" \
+            "system/lib64/android.system.suspend.control-V1-cpp-compat.so" \
+            0 0 644 "u:object_r:system_lib_file:s0" || return 1
+
         # The target manifest advertises both transports.  Keep the source
         # filename so no stale AIDL-only manifest is left beside it.
         cp -a -T "$TARGET_SUSPEND_MANIFEST" \
@@ -198,11 +321,14 @@ if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 36 ]]; then
             0 0 644 "u:object_r:system_file:s0" || return 1
         LOG_STEP_OUT
     else
-        LOG "  - Target has no dual suspend service; keeping the source AIDL service"
+        ABORT "Target suspend compatibility stack is incomplete in $TARGET_FW_ROOT"
+        return 1
     fi
 
-    unset TARGET_FW_ROOT TARGET_SUSPEND_SERVICE TARGET_SUSPEND_HIDL \
-        TARGET_SUSPEND_PROPS TARGET_SUSPEND_MANIFEST
+    unset TARGET_FIRMWARE_MODEL TARGET_FIRMWARE_CSC TARGET_FW_ROOT \
+        TARGET_SUSPEND_SERVICE TARGET_SUSPEND_HIDL TARGET_SUSPEND_PROPS \
+        TARGET_SUSPEND_LIBBASE TARGET_SUSPEND_CONTROL TARGET_SUSPEND_MANIFEST \
+        SUSPEND_COMPAT_LIBBASE SUSPEND_COMPAT_CONTROL SUSPEND_OUTPUT_SERVICE
 fi
 
 LOG "- Disabling encryption"

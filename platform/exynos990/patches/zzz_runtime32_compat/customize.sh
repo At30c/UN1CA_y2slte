@@ -264,6 +264,37 @@ while IFS='|' read -r RUNTIME_RELATIVE RUNTIME_TARGET RUNTIME_USER \
         return 1
 done <<< "$RUNTIME_LINKS"
 
+# Misc patches run before this module imports the r11s 32-bit media stack.
+# Apply the same Codec2 legacy-resource fallback here, after the donor library
+# has been placed in the work directory; otherwise the earlier module can only
+# patch the source 64-bit copy.
+CODEC2_32="$WORK_DIR/system/system/lib/libsfplugin_ccodec.so"
+if [[ -f "$CODEC2_32" ]]; then
+    LOG_STEP_IN "- Fixing legacy ARM32 Codec2 resource queries"
+    C2_REQUIRED_32_FROM="f0b58db004464d4878440068"
+    C2_REQUIRED_32_TO="0020704704464d4878440068"
+    C2_GLOBAL_32_FROM="2de9f04f9fb0e1490646dff8"
+    C2_GLOBAL_32_TO="00210160416081607047dff8"
+
+    if xxd -p -c 0 "$CODEC2_32" | grep -q "$C2_REQUIRED_32_FROM"; then
+        HEX_PATCH "$CODEC2_32" "$C2_REQUIRED_32_FROM" \
+            "$C2_REQUIRED_32_TO" || return 1
+    elif ! xxd -p -c 0 "$CODEC2_32" | grep -q "$C2_REQUIRED_32_TO"; then
+        ABORT "Missing ARM32 Codec2 required-resource query pattern"
+        return 1
+    fi
+    if xxd -p -c 0 "$CODEC2_32" | grep -q "$C2_GLOBAL_32_FROM"; then
+        HEX_PATCH "$CODEC2_32" "$C2_GLOBAL_32_FROM" \
+            "$C2_GLOBAL_32_TO" || return 1
+    elif ! xxd -p -c 0 "$CODEC2_32" | grep -q "$C2_GLOBAL_32_TO"; then
+        ABORT "Missing ARM32 Codec2 global-resource query pattern"
+        return 1
+    fi
+    unset C2_REQUIRED_32_FROM C2_REQUIRED_32_TO \
+        C2_GLOBAL_32_FROM C2_GLOBAL_32_TO
+    LOG_STEP_OUT
+fi
+
 unset RUNTIME_APEX RUNTIME_APEX_PATH I18N_APEX I18N_APEX_PATH \
     ART_APEX ART_APEX_PATH \
     RUNTIME_LIBS RUNTIME_LIB LEGACY_AUDIO_LIBS \

@@ -3521,13 +3521,14 @@ open both app-picker screens to validate the runtime behavior.
 
 The latest capture contains 21 occurrences of
 `Failed to query component store for system resources: 6` across Instagram,
-TikTok, Spotify, and `mediaserver`. In Codec2, status `6` is the
-`C2_NO_MEMORY` result, not a harmless component-name warning. The same
-timeline shows LMKD low-watermark reclaim and DMA-BUF usage rising to roughly
-817--834 MB while Instagram starts `OMX.Exynos.vp9.dec`; the decoder is then
-reclaimed and shut down. This is the first reversible pressure point to test
-for frequent Instagram/TikTok use and related heat, before importing an
-incompatible S24+ Codec2 HAL.
+TikTok, Spotify, and `mediaserver`. A later source-level verification corrected
+the original interpretation: Codec2 status `6` is `C2_BAD_INDEX` (`ENXIO`),
+not `C2_NO_MEMORY` (`ENOMEM`, status 12). Android 17 is querying the proposed
+`C2ResourcesCapacityTuning`, `C2ResourcesExcludedTuning`, and
+`C2ResourcesNeededTuning` parameters, which the legacy Exynos 990 HIDL 1.0
+component store does not implement. The separate LMKD/DMA-BUF pressure seen
+in the same timeline remains relevant to heat, but this particular status is
+not evidence of allocation pressure.
 
 The S24+ source vendor properties were forcing
 `ro.hwui.use_vulkan=true` and `debug.hwui.use_hint_manager=true`, while the
@@ -3537,12 +3538,11 @@ now restores those target values: it clears `ro.hwui.use_vulkan` and removes
 the hint-manager override. GPU acceleration is not disabled; only the
 source-device GPU policy is no longer forced onto the Exynos 990.
 
-This change is intentionally limited to an A/B thermal/DMA-BUF test. No ROM
-build or flash was executed. The next build should compare, while repeatedly
-opening Instagram and TikTok, `DmaBuf` totals, LMKD reclaim events,
-`system resources: 6`, skin temperature, and GPU timeout events. If those
-fall, the C2 error was pressure-induced; if they remain, the next target is
-the mixed 1.2 framework/1.0 vendor Codec2 stack, not a blind S24+ HAL import.
+This HWUI change is intentionally limited to an A/B thermal/DMA-BUF test. No
+ROM build or flash was executed. The next build should compare, while
+repeatedly opening Instagram and TikTok, `DmaBuf` totals, LMKD reclaim events,
+skin temperature, and GPU timeout events. Do not use `system resources: 6` as
+a memory-pressure counter.
 
 ### Suspend service compatibility and Codec2 `BAD_INDEX` (2026-09-24)
 
