@@ -2,7 +2,7 @@
 # Copyright (c) 2026 At30c
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-if $TARGET_CODENAME != "c2s"; then
+if [[ "$TARGET_CODENAME" != "c2s" ]]; then
     LOG "\033[0;33m! Nothing to do\033[0m"
     return 0
 fi
@@ -51,11 +51,13 @@ if ! grep -q -F '(allow system_server_30_0 uwb_data_file (file ' \
         >> "$WORK_DIR/vendor/$VENDOR_POLICY"
 fi
 
-# Both the c2s and current Samsung init scripts refer to /system/etc/uwb_key,
-# although the firmware actually ships the key in /vendor/etc. Keep the
-# framework-owned /data/uwb layout and source the key from its real location.
+# The c2s init script copied the UWB key from /system/etc/uwb_key, but the
+# key has always shipped in /vendor/etc and the current system init script
+# does not copy it at all. Keep the framework-owned /data/uwb layout and make
+# the copy read the key from its real location, adding the whole sequence
+# when the script being patched has no copy line yet.
 if [ ! -f "$WORK_DIR/system/$UWB_INIT" ]; then
-    LOGE "File not found: /system/$UWB_INIT"
+    LOGE "File not found: /$UWB_INIT"
     return 1
 fi
 
@@ -64,29 +66,88 @@ if [ ! -f "$WORK_DIR/vendor/etc/uwb_key" ]; then
     return 1
 fi
 
+UWB_KEY_COPY="copy /vendor/etc/uwb_key /data/uwb/Key"
+UWB_FIX_COPY=false
+UWB_ADD_COPY=false
+UWB_ADD_RESTORECON=false
+
 if grep -q -F 'copy /system/etc/uwb_key /data/uwb/Key' \
         "$WORK_DIR/system/$UWB_INIT"; then
-    LOG "- Correcting the c2s UWB key source"
-    sed -i 's|copy /system/etc/uwb_key /data/uwb/Key|copy /vendor/etc/uwb_key /data/uwb/Key|' \
-        "$WORK_DIR/system/$UWB_INIT"
-fi
-
-if ! grep -q -F 'copy /vendor/etc/uwb_key /data/uwb/Key' \
-        "$WORK_DIR/system/$UWB_INIT"; then
-    LOGE "Could not configure the c2s UWB key source"
-    return 1
+    UWB_FIX_COPY=true
+elif ! grep -q -F "$UWB_KEY_COPY" "$WORK_DIR/system/$UWB_INIT"; then
+    UWB_ADD_COPY=true
 fi
 
 if ! grep -q -F 'restorecon_recursive /data/uwb' \
         "$WORK_DIR/system/$UWB_INIT"; then
-    sed -i '/mkdir \/data\/uwb\/ 775 system system encryption=None/a\    restorecon_recursive /data/uwb' \
-        "$WORK_DIR/system/$UWB_INIT"
+    UWB_ADD_RESTORECON=true
+fi
+
+if [[ "$UWB_FIX_COPY" == true || "$UWB_ADD_COPY" == true || "$UWB_ADD_RESTORECON" == true ]]; then
+    if [[ "$UWB_ADD_COPY" == true ]]; then
+        LOG "- Adding the c2s UWB key copy to /$UWB_INIT"
+    elif [[ "$UWB_FIX_COPY" == true ]]; then
+        LOG "- Correcting the c2s UWB key source"
+    fi
+
+    if ! awk -v fix="$UWB_FIX_COPY" -v add_copy="$UWB_ADD_COPY" \
+            -v add_restorecon="$UWB_ADD_RESTORECON" '
+        {
+            if (fix == "true") {
+                sub(/copy \/system\/etc\/uwb_key \/data\/uwb\/Key/, "copy /vendor/etc/uwb_key /data/uwb/Key")
+            }
+            print
+
+            if (add_copy == "true" && !copy_done && $0 ~ /^[ \t]*mkdir \/data\/uwb\/[ \t]/) {
+                print "    copy /vendor/etc/uwb_key /data/uwb/Key"
+                print "    chmod 660 /data/uwb/Key"
+                print "    chown system system /data/uwb/Key"
+                copy_done = 1
+                inserted_copy = 1
+                if (add_restorecon == "true") {
+                    print "    restorecon_recursive /data/uwb"
+                    inserted_restorecon = 1
+                }
+                next
+            }
+
+            if (add_restorecon == "true" && !inserted_restorecon &&
+                    $0 ~ /^[ \t]*(copy .*\/data\/uwb\/Key|chown system system \/data\/uwb\/Key|mkdir \/data\/uwb\/[ \t])[ \t]*$/) {
+                print "    restorecon_recursive /data/uwb"
+                inserted_restorecon = 1
+            }
+        }
+
+        END {
+            if (add_copy == "true" && !inserted_copy) exit 42
+            if (add_restorecon == "true" && !inserted_restorecon) exit 42
+        }
+    ' "$WORK_DIR/system/$UWB_INIT" > "$WORK_DIR/system/$UWB_INIT.tmp"; then
+        rm -f "$WORK_DIR/system/$UWB_INIT.tmp"
+        LOGE "Could not configure the c2s UWB key source"
+        return 1
+    fi
+
+    # Never install a rewritten script that lost the copy it is supposed to
+    # have, otherwise the UWB service starts with no key at all.
+    if ! grep -q -F "$UWB_KEY_COPY" "$WORK_DIR/system/$UWB_INIT.tmp"; then
+        rm -f "$WORK_DIR/system/$UWB_INIT.tmp"
+        LOGE "Could not configure the c2s UWB key source"
+        return 1
+    fi
+
+    mv -f "$WORK_DIR/system/$UWB_INIT.tmp" "$WORK_DIR/system/$UWB_INIT"
+fi
+
+if ! grep -q -F "$UWB_KEY_COPY" "$WORK_DIR/system/$UWB_INIT"; then
+    LOGE "Could not configure the c2s UWB key source"
+    return 1
 fi
 
 # A failed SamsungExtension construction must never leave an unguarded OEM
 # callback capable of killing system_server.
 if [ ! -f "$WORK_DIR/system/$UWB_JAR" ]; then
-    LOGE "File not found: /system/$UWB_JAR"
+    LOGE "File not found: /$UWB_JAR"
     return 1
 fi
 
@@ -94,7 +155,7 @@ DECODE_APK "system" "$UWB_JAR" || return 1
 
 UWB_CALLBACK_PATH="$APKTOOL_DIR/system/${UWB_JAR//system\//}/$UWB_CALLBACK"
 if [ ! -f "$UWB_CALLBACK_PATH" ]; then
-    LOGE "Required Samsung UWB smali files were not found in /system/$UWB_JAR"
+    LOGE "Required Samsung UWB smali files were not found in /$UWB_JAR"
     return 1
 fi
 
@@ -137,7 +198,7 @@ else
         }
     ' "$UWB_CALLBACK_PATH" > "$UWB_CALLBACK_PATH.tmp"; then
         rm -f "$UWB_CALLBACK_PATH.tmp"
-        LOGE "Could not add the UWB callback guard in /system/$UWB_JAR/$UWB_CALLBACK"
+        LOGE "Could not add the UWB callback guard in /$UWB_JAR/$UWB_CALLBACK"
         return 1
     fi
 
@@ -145,3 +206,4 @@ else
 fi
 
 unset UWB_INIT UWB_JAR UWB_CALLBACK VENDOR_POLICY UWB_CALLBACK_PATH
+unset UWB_KEY_COPY UWB_FIX_COPY UWB_ADD_COPY UWB_ADD_RESTORECON
