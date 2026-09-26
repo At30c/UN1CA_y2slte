@@ -1,0 +1,47 @@
+From 3a052e7a69ef80b356f70005a9515e6cd693c8d9 Mon Sep 17 00:00:00 2001
+From: Android-Artisan <romartisan2025@gmail.com>
+Date: Wed, 23 Sep 2026 00:00:00 +0000
+Subject: [PATCH] Make device image product code configurable
+
+Original implementation by Android-Artisan.
+Upstream: 3a052e7a69ef80b356f70005a9515e6cd693c8d9
+
+Adapted for the One UI 9 SecSettings layout, where DeviceImageManager$1 is
+in smali_classes3 rather than smali_classes5.
+
+DeviceImageManager reads the model code from ril.product_code to fetch the
+device image via SCPM. Read persist.sys.unica.device_image first and fall
+back to ril.product_code when it is empty, so the image can be changed at
+runtime from UN1CA Settings.
+
+--- a/smali_classes3/com/samsung/android/settings/deviceinfo/aboutphone/DeviceImageManager$1.smali
++++ b/smali_classes3/com/samsung/android/settings/deviceinfo/aboutphone/DeviceImageManager$1.smali
+@@ -159,11 +159,24 @@
+ 
+     if-eqz v2, :cond_3
+ 
+-    const-string v0, "ril.product_code"
++    const-string v0, "persist.sys.unica.device_image"
+ 
+     invoke-static {v0}, Landroid/os/SystemProperties;->get(Ljava/lang/String;)Ljava/lang/String;
+ 
+     move-result-object v0
+ 
++    invoke-static {v0}, Landroid/text/TextUtils;->isEmpty(Ljava/lang/CharSequence;)Z
++
++    move-result v2
++
++    if-eqz v2, :cond_unica_device_image
++
++    const-string v0, "ril.product_code"
++
++    invoke-static {v0}, Landroid/os/SystemProperties;->get(Ljava/lang/String;)Ljava/lang/String;
++
++    move-result-object v0
++
++    :cond_unica_device_image
+     const-string v2, "requestPki - model_code = "
+ 
+     invoke-static {v2, v0, v4}, Landroidx/fragment/app/Fragment$5$$ExternalSyntheticOutline0;->m$1(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V
+-- 
+2.53.0

@@ -78,8 +78,13 @@ LOG_STEP_IN "- Adding UN1CA Settings"
 while IFS= read -r f; do
     f="${f//$MODPATH\/SecSettings.apk\//}"
 
+    # Full XML overlays (for example unica_ui_settings.xml) may already exist
+    # in an incremental work-dir.  They are documents, not sed instructions;
+    # copy them again instead of attempting to execute their XML declaration.
+    # res/values XML remains additive and is handled by the branch below.
     if [ ! -f "$APKTOOL_DIR/system/priv-app/SecSettings/SecSettings.apk/$f" ] || \
-            [[ "$f" != *".xml" ]]; then
+            [[ "$f" != *".xml" ]] || \
+            { [[ "$f" != *"res/values"* ]] && head -n 1 "$MODPATH/SecSettings.apk/$f" | grep -q '^<?xml '; }; then
         LOG "- Adding \"$f\" to /system/system/priv-app/SecSettings.apk"
         EVAL "mkdir -p \"$(dirname "$APKTOOL_DIR/system/priv-app/SecSettings/SecSettings.apk/$f")\""
         EVAL "cp -a \"$MODPATH/SecSettings.apk/${f//\$/\\$}\" \"$APKTOOL_DIR/system/priv-app/SecSettings/SecSettings.apk/${f//\$/\\$}\""
