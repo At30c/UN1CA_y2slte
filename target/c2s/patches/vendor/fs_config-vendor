@@ -1,0 +1,9 @@
+vendor 0 2000 755 capabilities=0x0
+vendor/etc 0 2000 755 capabilities=0x0
+vendor/etc/permissions 0 2000 755 capabilities=0x0
+vendor/etc/vintf 0 2000 755 capabilities=0x0
+vendor/etc/vintf/manifest 0 2000 755 capabilities=0x0
+vendor/etc/permissions/android.hardware.uwb.xml 0 0 644 capabilities=0x0
+vendor/etc/permissions/samsung.hardware.uwb.xml 0 0 644 capabilities=0x0
+vendor/etc/vintf/manifest.xml 0 0 644 capabilities=0x0
+vendor/etc/vintf/manifest/android.hardware.uwb.xml 0 0 644 capabilities=0x0
