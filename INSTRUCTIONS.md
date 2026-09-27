@@ -3771,3 +3771,236 @@ Static validation confirmed that the target layout root is
 `sec_settings_main_switch_bar`, and the incompatible nested cast path was
 removed. `git diff --check` passed. No APK/ROM build or flash was performed;
 build `SecSettings.apk` and open both UN1CA screens to validate on-device.
+
+### 8K30 and 4K120 on every exynos990 target (2026-09-27)
+
+Only `x1s` carried the 8K30 and 4K120 entries, from the earlier work there.
+The other five `exynos990` targets had neither, so both resolutions were
+missing everywhere else. `7ba10f08` copies the two lines verbatim into
+`c1s`, `c2s`, `x1s`, `z3s`, `y2s` and `y2slte`. `r8s` was left alone on
+request.
+
+The two attributes are not interchangeable with other targets' tables. The
+copied `x1s` values are:
+
+```xml
+<Function name="VIDEO_FRC" camcorder_index="0"  vdis="false"  ... />
+<Function name="VIDEO_120FPS" supported-mode="pro_video,slow_motion" ... />
+```
+
+Two corrections were made to `x1s` before copying it out. 8K30 originally
+carried `vdis="true"`, which made the HAL reject the stream outright:
+
+```text
+ExynosCameraSec: Not supported VDIS size 7680x4320 fps 30
+ExynosCameraInterface: configure_streams error!!
+```
+
+The SW VDIS table in the S20+ HAL tops out at 2400x1080, so 8K30 has to run
+with VDIS off (`5adbba85`). 4K120 was stuck on `slow_motion`, where the
+shooting mode caps capture size at 1920x1080 and the option never appeared;
+adding `pro_video` exposed it (`84ca2f49`). A plain `video` token was tried
+first and did nothing, so the attribute is left as
+`pro_video,slow_motion` rather than implying plain video reaches 120fps.
+
+Verified on `x1s` only. 8K30 recorded as HEVC 7680x4320 at 30000/1001. 4K120
+recorded as HEVC Main 10, 3840x2160, 120/1 fps, 500 frames, `yuv420p10le`.
+The other five targets are unverified.
+
+### `cam8k.sh` runtime toggle for camera features (2026-09-27)
+
+Because `/` is EROFS, feature changes are applied by a Termux script that
+copies `camera-feature.xml` to `/data/local/tmp`, relabels it, bind-mounts it
+over `/system/cameradata/camera-feature.xml` and restarts the camera provider
+and HAL processes. The script supports `on`, `off` and `status`, edits only
+the BACK entries, preserves the FRONT entries untouched, and is idempotent:
+running `on` twice does not duplicate an entry.
+
+It was validated in a sandbox with a fake `su`/`mount`, covering the on, off
+and status paths, idempotency and XML well-formedness. It has not been run
+end-to-end on a real device.
+
+The script is deliberately left untracked in the repository root so it can be
+copied to a device without being part of any ROM build. Since `7ba10f08`
+bakes the same entries into the images, the script is only useful for testing
+variants that do not ship a rebuilt XML.
+
+### DeX WFD: unresolved AudioTrack constructor (2026-09-27)
+
+A fresh `dex.txt` capture showed the `remotedisplay` service failing at
+startup, after the ARM32 ICU closure had already been fixed in `ccb692b0`.
+The remaining failure is a single unresolved symbol out of the 888 imported
+by the ARM32 WFD library, the 16-argument `android::AudioTrack` constructor:
+
+```text
+_ZN7android10AudioTrackC1E19audio_stream_type_tj14audio_format_t
+  20audio_channel_mask_tj20audio_output_flags_t
+  RKNS_2wpINS0_19IAudioTrackCallbackEEEi15audio_session_t
+  NS0_13transfer_typeEPK20audio_offload_info_t
+  RKNS_7content22AttributionSourceStateEPK18audio_attributes_tbfi
+```
+
+Two counting mistakes were made while narrowing this down and are worth
+recording. Counting `Verneed`/`Verdef` version suffixes as separate symbols,
+and counting `UND` entries in a library's own symbol table, both inflate the
+figure. The correct method is to filter the target library's `dynsym` to
+defined, non-`UND` symbols and compare exact names. The real answer is one
+missing symbol, not 287.
+
+Android 17 removed that constructor. The target's own
+`libaudioclient.so` exports a 17-argument overload instead, which is the same
+name with one extra trailing parameter:
+
+```text
+...E19audio_stream_type_t...EPK18audio_attributes_tbfi
+  RKNSt3__112basic_stringIcNSM_11char_traitsIcEENSM_9allocatorIcEEEE
+```
+
+That distinction matters when re-running the check. A substring match accepts
+the Android 17 library, because the old name is a strict prefix of the new
+one. The match has to be against the whole symbol.
+
+There is no symbol versioning on either side. `readelf -d` shows no
+`Verneed`/`Verdef` for this library, so the bare symbol name is the entire
+contract.
+
+### r0sxxx ARM32 audio client donor (2026-09-27)
+
+The donor comes from an unrelated port work dir, not a factory image:
+
+```text
+/mnt/caddy/coisas_do_miguel/Port/QuantumROM/FW/SM-S901B
+```
+
+That tree is assembled from more than one device, which is why its
+identifiers do not agree. Its directory name says `SM-S901B` and its build id
+still reads `BP4A.251205.006.S901BXXUMHZCB`, but its props report
+`SM-G988B`. More specifically, the partitions were taken from different
+sources, so the partition props are what matter:
+
+```text
+ro.product.system.name=r0sxxx      ro.product.vendor.name=z3sxxx
+ro.product.system.device=essi      ro.product.vendor.device=z3s
+ro.product.system.model=SM-G988B  ro.product.vendor.model=SM-G988B
+```
+
+`vendor` and `odm` come from the S20 Ultra side and report `z3sxxx`; `product`
+and `system` come from the S22 side and report `r0sxxx`. The libraries that
+were needed are in `system`, and the system partition identifies itself as
+`r0sxxx`, so the donor is named after the partition the files were read
+from, not after the vendor props. An audio client is not a vendor library.
+
+Only three files were taken. This is not a general donor:
+
+```text
+prebuilts/samsung/r0sxxx/system/lib/wfd/libaudioclient.so
+prebuilts/samsung/r0sxxx/system/lib/wfd/libnblog.so
+prebuilts/samsung/r0sxxx/system/lib/wfd/android.media.audio.common.types-V4-cpp.so
+prebuilts/samsung/r0sxxx/fs_config-system
+prebuilts/samsung/r0sxxx/file_context-system
+```
+
+`libaudioclient.so` is the replacement itself. The other two are the only
+dependencies the Android 17 system image does not already provide. The donor
+audio client has 35 `DT_NEEDED` entries; checked against the device, 33
+resolve in `/system/lib`, `/system/lib64` or the media apex, and exactly two
+are missing, which are the two shipped here. So these three files are the
+complete gap.
+
+A known residual risk: the target system ships
+`android.media.audio.common.types-V5-cpp.so`, and this donor pulls V4 of that
+library into `remotedisplay`, so V4 and V5 of the same media audio types end
+up loaded in one process. The service starts and stays up with that
+combination, so it is not immediately fatal, but it is untested against a
+real DeX session. If audio init inside a session ever faults, that mismatch is
+the first thing to look at.
+
+### Loading the donor audio client in remotedisplay only (2026-09-27)
+
+The fix is deliberately scoped to the one service that needs the old audio
+client. The three libraries are staged into a private `/system/lib/wfd`, and
+`remotedisplay.rc` is given `setenv LD_LIBRARY_PATH /system/lib/wfd`, which
+the dynamic linker searches before the default paths. No other process sees
+these libraries, so the Android 17 system-wide audio stack is left alone.
+
+A `DT_NEEDED` graph check is not sufficient to validate this. The existing
+WFD validation passed on a build that shipped and could not start, because a
+library that is entirely absent still leaves an otherwise satisfiable graph.
+The build now asserts the donor exports the exact symbol:
+
+```sh
+readelf --dyn-syms -W libaudioclient.so | awk '{ print $NF }' | \
+    grep -qxF "$WFD_AUDIO_TRACK_SYMBOL"
+```
+
+`awk '{print $NF}'` plus `grep -qxF` compares whole lines, which is what makes
+the check reject the Android 17 library instead of accepting it as a
+substring.
+
+The donor follows the same layout as the other prebuilt donors, `dm3qxxx`
+being the reference: the tree mirrors the target paths, and it carries its own
+`fs_config-system` and `file_context-system` metadata files. The patch
+therefore calls `ADD_TO_WORK_DIR "r0sxxx" "system" "system/lib/wfd/<lib>"` with
+no explicit owner, mode or label, exactly like the SPen patch does with
+`dm3qxxx`. In `ADD_TO_WORK_DIR`, an explicit mode and label take priority, but
+when they are omitted the entry is looked up in the donor's own metadata
+files, so those files are authoritative and not decorative.
+
+The donor layout puts the libraries under `system/lib/wfd/` rather than
+`system/lib/`, which is what makes the donor path and the target path the same
+string. For a `system` partition whose donor has no `system/system` directory,
+`ADD_TO_WORK_DIR` strips the leading `system/` from the requested file and
+resolves both sides: the source to `system/lib/wfd/<lib>` in the donor, and the
+destination to `$WORK_DIR/system/system/lib/wfd/<lib>`, which is the
+`/system/lib/wfd` the `rc` refers to.
+
+`prebuilts/samsung/r0sxxx/fs_config-system`:
+
+```text
+system/lib 0 0 755 capabilities=0x0
+system/lib/wfd 0 0 755 capabilities=0x0
+system/lib/wfd/libaudioclient.so 0 0 644 capabilities=0x0
+system/lib/wfd/libnblog.so 0 0 644 capabilities=0x0
+system/lib/wfd/android.media.audio.common.types-V4-cpp.so 0 0 644 capabilities=0x0
+```
+
+`prebuilts/samsung/r0sxxx/file_context-system`:
+
+```text
+/system/lib u:object_r:system_lib_file:s0
+/system/lib/wfd u:object_r:system_lib_file:s0
+/system/lib/wfd/libaudioclient\.so u:object_r:system_lib_file:s0
+/system/lib/wfd/libnblog\.so u:object_r:system_lib_file:s0
+/system/lib/wfd/android\.media\.audio\.common\.types-V4-cpp\.so u:object_r:system_lib_file:s0
+```
+
+`u:object_r:system_lib_file:s0` is the correct label: it is what the rest of
+`/system/lib` uses, so the new files inherit the same SELinux context and no
+policy change is needed. The escaping is the one `_HANDLE_SPECIAL_CHARS`
+applies, and it is required, since `ADD_TO_WORK_DIR` greps the donor for the
+already-escaped form. The directory entries are required as well, since the
+mount image carries the whole path.
+
+Unlike a factory firmware donor, this tree has no `.current` file.
+`update_prebuilt_blobs.sh` only uses that for donors extracted by the
+`MODEL_CSC` firmware flow, and these three files come from a port work dir
+rather than from a factory package, so there is nothing for it to record.
+
+Validated so far: `bash -n`, the exact-symbol check accepting the donor and
+rejecting the target library, the two missing-dependency count, a sandboxed
+real `ADD_TO_WORK_DIR` producing the entries above from the donor's own
+metadata files, and a negative test confirming the donor files win: changing
+`644` to `600` and the label to `system_file` in a throwaway copy of the donor
+changed the generated output the same way, with no fallback warning. The `rc`
+injection is idempotent. The existing WFD harness still passes 13 of 13.
+
+Verified by hand on the device: with the same three libraries in
+`LD_LIBRARY_PATH`, `/system/bin/remotedisplay` starts, stays alive and logs
+`RemoteDisplayService created`, with no fatal and no linker error. That test
+used `/data/local/tmp/wfdtest`, so it does not prove the libraries are visible
+at `/system/lib/wfd` after the EROFS mount. This is the first thing to check
+in `logcat` after a rebuild: if the init-run service still fails, the
+private directory is not being seen and the approach has to change.
+
+Not yet through a full build. The init-run service only picks this up after a
+rebuild and a reboot.

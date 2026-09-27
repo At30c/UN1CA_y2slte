@@ -1,0 +1,5 @@
+/system/lib u:object_r:system_lib_file:s0
+/system/lib/wfd u:object_r:system_lib_file:s0
+/system/lib/wfd/libaudioclient\.so u:object_r:system_lib_file:s0
+/system/lib/wfd/libnblog\.so u:object_r:system_lib_file:s0
+/system/lib/wfd/android\.media\.audio\.common\.types-V4-cpp\.so u:object_r:system_lib_file:s0

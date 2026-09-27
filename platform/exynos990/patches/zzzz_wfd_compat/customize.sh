@@ -260,31 +260,24 @@ libnblog.so
 android.media.audio.common.types-V4-cpp.so
 "
 WFD_AUDIO_DONOR="$SRC_DIR/prebuilts/samsung/r0sxxx"
-WFD_AUDIO_TMP="$(mktemp -d)"
-mkdir -p "$WFD_AUDIO_TMP/system/lib/wfd"
 for WFD_AUDIO_LIB in $WFD_AUDIO_LIBS; do
-    WFD_AUDIO_SRC="$WFD_AUDIO_DONOR/system/lib/$WFD_AUDIO_LIB"
+    WFD_AUDIO_SRC="$WFD_AUDIO_DONOR/system/lib/wfd/$WFD_AUDIO_LIB"
     if [ ! -f "$WFD_AUDIO_SRC" ]; then
-        ABORT "Missing ARM32 audio client donor lib: system/lib/$WFD_AUDIO_LIB"
-        rm -rf "$WFD_AUDIO_TMP"
+        ABORT "Missing ARM32 audio client donor lib: system/lib/wfd/$WFD_AUDIO_LIB"
         return 1
     fi
     if ! LC_ALL=C readelf -h "$WFD_AUDIO_SRC" 2>/dev/null | grep -q 'ELF32'; then
         ABORT "ARM32 audio client donor lib is not ELF32: $WFD_AUDIO_LIB"
-        rm -rf "$WFD_AUDIO_TMP"
         return 1
     fi
-    cp -f "$WFD_AUDIO_SRC" "$WFD_AUDIO_TMP/system/lib/wfd/$WFD_AUDIO_LIB" || return 1
-    ADD_TO_WORK_DIR "$WFD_AUDIO_TMP" "system" "system/lib/wfd/$WFD_AUDIO_LIB" \
-        0 0 644 "u:object_r:system_lib_file:s0" || return 1
+    ADD_TO_WORK_DIR "r0sxxx" "system" "system/lib/wfd/$WFD_AUDIO_LIB" || return 1
 done
-rm -rf "$WFD_AUDIO_TMP"
 
 # The graph validation below only walks DT_NEEDED, which is why a donor whose
 # audio client had already dropped the old overload shipped as a working build
 # that could not start. Check the symbol the WFD library actually imports.
 WFD_AUDIO_TRACK_SYMBOL="_ZN7android10AudioTrackC1E19audio_stream_type_tj14audio_format_t20audio_channel_mask_tj20audio_output_flags_tRKNS_2wpINS0_19IAudioTrackCallbackEEEi15audio_session_tNS0_13transfer_typeEPK20audio_offload_info_tRKNS_7content22AttributionSourceStateEPK18audio_attributes_tbfi"
-if ! readelf --dyn-syms -W "$WFD_AUDIO_DONOR/system/lib/libaudioclient.so" 2>/dev/null | \
+if ! readelf --dyn-syms -W "$WFD_AUDIO_DONOR/system/lib/wfd/libaudioclient.so" 2>/dev/null | \
         awk '{ print $NF }' | grep -qxF "$WFD_AUDIO_TRACK_SYMBOL"; then
     ABORT "r0sxxx libaudioclient.so does not export the 16-argument AudioTrack constructor"
     return 1
