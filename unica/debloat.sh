@@ -63,9 +63,24 @@ ADD_TO_WORK_DIR "pa2qxxx" "system" \
     "system/etc/permissions/signature-permissions-com.samsung.android.game.gamehome.xml" \
     0 0 644 "u:object_r:system_file:s0"
 
+# Gmail
+PRODUCT_DEBLOAT+="
+app/Gmail2
+"
+
 # Google Assistant shortcut
 PRODUCT_DEBLOAT+="
 app/AssistantShell
+"
+
+# Google Duo
+PRODUCT_DEBLOAT+="
+app/DuoStub
+"
+
+# Google Maps
+PRODUCT_DEBLOAT+="
+app/Maps
 "
 
 # Language packs
@@ -124,6 +139,11 @@ system/priv-app/AREmojiEditor
 system/priv-app/AvatarEmojiSticker
 "
 
+# Samsung Free
+SYSTEM_DEBLOAT+="
+system/app/MinusOnePage
+"
+
 # Samsung Language Core
 SYSTEM_DEBLOAT+="
 system/etc/permissions/signature-permissions-com.samsung.android.offline.languagemodel.xml
@@ -135,7 +155,6 @@ SYSTEM_DEBLOAT+="
 system/etc/default-permissions/default-permissions-com.samsung.android.messaging.xml
 system/etc/permissions/privapp-permissions-com.samsung.android.messaging.xml
 system/priv-app/SamsungMessages
-"
 
 # Samsung Pass
 SYSTEM_DEBLOAT+="
@@ -150,6 +169,11 @@ system/etc/sysconfig/samsungauthframework.xml
 system/etc/sysconfig/samsungpassapp.xml
 system/priv-app/AuthFramework
 system/priv-app/SamsungPass
+"
+
+# Samsung Reminder
+SYSTEM_DEBLOAT+="
+system/app/SmartReminder
 "
 
 # Samsung Visit In
@@ -217,4 +241,9 @@ system/priv-app/SVoiceIME
 SYSTEM_DEBLOAT+="
 system/app/VoiceAccess
 system/etc/sysconfig/feature-a11y-preload-voacc.xml
+"
+
+# YouTube
+PRODUCT_DEBLOAT+="
+app/YouTube
 "
