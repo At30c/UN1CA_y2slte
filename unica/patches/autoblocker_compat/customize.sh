@@ -63,9 +63,54 @@ if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 36 ]]; then
     [ -n "$RAMPART_BOOT_METHOD" ] || \
         ABORT "Unable to resolve Rampart boot-complete method"
 
+    RAMPART_BOOT_HANDLER_REL="${RAMPART_BOOT_HANDLER#"$RAMPART_DECODE_DIR/"}"
+
+    # The reset below is written as raw smali, and smali does not verify that a
+    # referenced class, field or method actually exists. A stale obfuscated
+    # name therefore builds cleanly and only fails at runtime, which for the
+    # boot handler means a NoClassDefFoundError on every broadcast followed by
+    # a dumpstate soft reboot. Resolve every reference now, while the stock
+    # decode in front of us can still be used to check it.
+    RAMPART_SETTINGS_HELPER="smali/m5/a.smali"
+
+    if [ -f "$RAMPART_DECODE_DIR/$RAMPART_SETTINGS_HELPER" ] && \
+       grep -q "^\.method public final b(ILjava/lang/String;)V" \
+           "$RAMPART_DECODE_DIR/$RAMPART_SETTINGS_HELPER" && \
+       grep -q "^\.method public final d(ILjava/lang/String;)V" \
+           "$RAMPART_DECODE_DIR/$RAMPART_SETTINGS_HELPER"; then
+        RAMPART_SETTINGS_CLASS="Lm5/a;"
+    else
+        ABORT "Unable to resolve the Rampart settings wrapper used by the persisted-policy reset"
+    fi
+
+    # m5.a's putInt helpers only work on a non-null ContentResolver, so the
+    # handler's own Context field is needed to build one. It is inherited, so
+    # walk the .super chain until the declaration is found.
+    RAMPART_CONTEXT_CLASS=""
+    RAMPART_WALK="$RAMPART_DECODE_DIR/$RAMPART_BOOT_HANDLER_REL"
+
+    while [ -f "$RAMPART_WALK" ]; do
+        if grep -q "^\.field public final d:Landroid/content/Context;" "$RAMPART_WALK"; then
+            RAMPART_CONTEXT_CLASS="L$(basename "$RAMPART_WALK" .smali | tr '/' '.')/;"
+            break
+        fi
+
+        RAMPART_WALK="$(awk '
+            /^\.super / {
+                print "'"$RAMPART_DECODE_DIR"'/smali/" substr($2, 2) ".smali"
+                exit
+            }
+        ' "$RAMPART_WALK")"
+    done
+
+    [ -n "$RAMPART_CONTEXT_CLASS" ] || \
+        ABORT "Unable to resolve the Context field of the Rampart boot handler"
+
     LOG "- Resetting persisted Auto Blocker policies at locked boot"
 
-    awk -v METHOD="$RAMPART_BOOT_METHOD" '
+    awk -v METHOD="$RAMPART_BOOT_METHOD" \
+        -v SETTINGS="$RAMPART_SETTINGS_CLASS" \
+        -v CONTEXT="$RAMPART_CONTEXT_CLASS" '
         BEGIN { in_method = 0; injected = 0 }
 
         /^\.method / && index($0, METHOD) {
@@ -81,11 +126,11 @@ if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 36 ]]; then
             print "    # UN1CA: clear stale Rampart policy after a dirty flash"
             print "    move-object/from16 v0, p0"
             print ""
-            print "    iget-object v0, v0, LF1/a;->e:Landroid/content/Context;"
+            print "    iget-object v0, v0, " CONTEXT "->d:Landroid/content/Context;"
             print ""
-            print "    new-instance v1, LR1/a;"
+            print "    new-instance v1, " SETTINGS
             print ""
-            print "    invoke-direct {v1, v0}, LR1/a;-><init>(Landroid/content/Context;)V"
+            print "    invoke-direct {v1, v0}, " SETTINGS "-><init>(Landroid/content/Context;)V"
             print ""
             print "    const/4 v0, 0x0"
 
@@ -96,7 +141,7 @@ if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 36 ]]; then
                 print ""
                 print "    const-string v2, \"" keys[i] "\""
                 print ""
-                print "    invoke-virtual {v1, v0, v2}, LR1/a;->d(ILjava/lang/String;)V"
+                print "    invoke-virtual {v1, v0, v2}, " SETTINGS "->d(ILjava/lang/String;)V"
             }
 
             print ""
@@ -104,7 +149,7 @@ if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 36 ]]; then
             print ""
             print "    const-string v2, \"adb_enabled\""
             print ""
-            print "    invoke-virtual {v1, v0, v2}, LR1/a;->b(ILjava/lang/String;)V"
+            print "    invoke-virtual {v1, v0, v2}, " SETTINGS "->b(ILjava/lang/String;)V"
             print ""
             injected = 1
         }
@@ -124,6 +169,8 @@ if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 36 ]]; then
     mv "$RAMPART_BOOT_HANDLER.tmp" "$RAMPART_BOOT_HANDLER"
 
     unset RAMPART_APK RAMPART_DECODE_DIR RAMPART_DEVICE_CONFIG \
-        RAMPART_UNLOCK_METHOD RAMPART_BOOT_HANDLER RAMPART_BOOT_METHOD
+        RAMPART_UNLOCK_METHOD RAMPART_BOOT_HANDLER RAMPART_BOOT_METHOD \
+        RAMPART_BOOT_HANDLER_REL RAMPART_SETTINGS_HELPER \
+        RAMPART_SETTINGS_CLASS RAMPART_CONTEXT_CLASS RAMPART_WALK
     LOG_STEP_OUT
 fi
