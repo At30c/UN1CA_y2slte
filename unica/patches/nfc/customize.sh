@@ -187,6 +187,18 @@ elif [ -f "$FW_DIR/$TARGET_FIRMWARE_PATH/system/system/lib64/libnfc_nxppn_jni.so
     _IMPORT_LEGACY_NXP_JNI "lib64" "nxppn"
 fi
 
+# The source nfcservices APEX ships its own libnfc_nci_jni.so, built together
+# with the NfcService classes that dlopen it. A copy dropped in /system/lib64
+# takes precedence over the APEX at runtime and the two are not interchangeable:
+# the donor registers NativeNfcManager.doEnableDiscovery(IZZZ[BZ)V while the
+# source classes only declare doEnableDiscovery(IZZZ[B[BZ)V, so loadLibrary()
+# throws NoSuchMethodError and com.android.nfc crash-loops on every start.
+# Let the APEX keep ownership of the arm64 JNI.
+if [ -f "$WORK_DIR/system/system/lib64/libnfc_nci_jni.so" ] && \
+        ls "$FW_DIR/$SOURCE_FIRMWARE_PATH/system/system/apex/"com.android.nfcservices.cap* >/dev/null 2>&1; then
+    DELETE_FROM_WORK_DIR "system" "system/lib64/libnfc_nci_jni.so"
+fi
+
 # SEC_PRODUCT_FEATURE_NFC_CHIP_NAME:=STM_ST21
 # - API 35 and below: libnfc_st_jni.so
 # - API 36: libstnfc_nci_jni.so
