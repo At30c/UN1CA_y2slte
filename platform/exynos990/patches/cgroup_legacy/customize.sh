@@ -66,16 +66,29 @@ ADD_TO_WORK_DIR "r11sxxx" "system" "system/lib/libc++.so" \
     0 0 644 "u:object_r:system_lib_file:s0" || return 1
 
 # The memory controller is available in the 4.19 kernel and
-# memory_recursiveprot is enabled. Keep the boot activation helper, but do not
-# import the donor's unrelated libchrome.so files.
+# memory_recursiveprot is enabled. Keep the boot activation helper.
 ADD_TO_WORK_DIR "e2sxxx" "system" "system/etc/init/cgroupmem.rc" \
     0 0 644 "u:object_r:system_file:s0" || return 1
 
-if [ -f "$CGROUP_SOURCE_DIR/system/system/lib64/libchrome.so" ]; then
-    ADD_TO_WORK_DIR "$CGROUP_SOURCE_DIR" "system" "system/lib64/libchrome.so" || return 1
-fi
-if [ -e "$WORK_DIR/vendor/lib64/libchrome.so" ]; then
-    DELETE_FROM_WORK_DIR "vendor" "lib64/libchrome.so" || return 1
+# The source already carries libchrome.so in its own system image, so only the
+# vendor copy has to be provided here. The target's own vendor library used to
+# be dropped at this point, but the p3sxxx UWB and secure element services link
+# against libchrome.so: with it missing the dynamic linker aborts both with
+# "library libchrome.so not found" and the UWB HAL never starts.
+#
+# Every exynos990 target ships a vendor libchrome.so built together with the
+# rest of its vendor binaries, so that one is kept whenever it is present and
+# the source copy is only a fallback. Failing to find either is not fatal: this
+# patch must not break targets that legitimately have no vendor libchrome.
+CGROUP_VENDOR_LIBCHROME=false
+if [ -f "$WORK_DIR/vendor/lib64/libchrome.so" ]; then
+    LOG "  - Kept target vendor/lib64/libchrome.so"
+elif [ -f "$CGROUP_SOURCE_DIR/vendor/lib64/libchrome.so" ]; then
+    ADD_TO_WORK_DIR "$CGROUP_SOURCE_DIR" "vendor" "lib64/libchrome.so" || return 1
+    CGROUP_VENDOR_LIBCHROME=true
+    LOG "  - Imported source vendor/lib64/libchrome.so"
+else
+    LOG "  - No vendor/lib64/libchrome.so in the target or the source"
 fi
 
 for f in \
@@ -93,8 +106,13 @@ do
     fi
 done
 
+if [ "$CGROUP_VENDOR_LIBCHROME" = true ] && \
+        [ ! -f "$WORK_DIR/vendor/lib64/libchrome.so" ]; then
+    ABORT "Source-compatible cgroup file was not installed: vendor/lib64/libchrome.so"
+    return 1
+fi
+
 LOG "  - Installed e2sxxx-compatible cgroups.json/task_profiles.json"
-LOG "  - Kept source $CGROUP_SOURCE_FIRMWARE_PATH libcgrouprc.so and libchrome.so"
-LOG "  - Removed donor vendor/lib64/libchrome.so"
+LOG "  - Kept source $CGROUP_SOURCE_FIRMWARE_PATH libcgrouprc.so"
 
 LOG_STEP_OUT
