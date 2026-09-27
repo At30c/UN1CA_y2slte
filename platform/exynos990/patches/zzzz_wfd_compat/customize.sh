@@ -342,6 +342,108 @@ if ! readelf --dyn-syms -W "$WFD_AUDIO_WFD_LIB" 2>/dev/null | \
 fi
 LOG "  - libremotedisplay_wfd.so redirected to libaudioclient_wfd_compat.so"
 
+# The audio closure links, the WFD handshake completes, and remotedisplay then
+# dies at its first video buffer allocation:
+#
+#   Gralloc4: mapper 4.x is not supported
+#   GraphicBufferMapper: gralloc-mapper is missing
+#   Fatal signal 6 (SIGABRT) in tid 24394 (binder:24157_3), pid 24157
+#
+# The first line is informational and shows up in ten other processes that keep
+# running. The second is level F and appears only in the two remotedisplay PIDs,
+# both of which abort, so it is the actual cause.
+#
+# The string lives in the ARM32 /system/lib/libui.so, but what it loads is a
+# vendor graphics mapper. libui walks the HIDL passthrough stubs in order and
+# reports each version it cannot use, so `mapper 4.x is not supported` means the
+# 4.0 path was selected and its vendor implementation could not be loaded. The
+# target has no ARM32 gralloc at all: /vendor/lib and /system/system/lib hold
+# zero ARM32 .so files, libgralloctypes.so and android.hardware.graphics.mapper
+# @4.0.so exist only under lib64, and the sole 32-bit vendor mapper is the old
+# HIDL android.hardware.graphics.mapper@2.0-impl-2.1.so. That is why the audio
+# donors alone were not enough: the video path needs a mapper the Exynos 2400
+# never shipped in 32-bit.
+#
+# The S22 Exynos (s5e9925) firmware does ship the ARM32 mapper, in the same
+# -impl-sgr form the target uses for its own ARM64 mapper, and its vendor
+# manifest declares mapper 4.0 as <transport arch="32+64">passthrough, which is
+# what the ARM32 libui requires. Its 32-bit libgralloctypes/libhidlbase/libbase
+# dependencies are not needed from this donor because the target's /system/lib
+# already resolves them through the r9s/r11s WFD closure.
+#
+# Only three files are missing from the target. libion_exynos.so is deliberately
+# not donated: the target already ships an ARM32 build whose exported symbols are
+# a superset of the S22 one, so replacing it would only add risk.
+WFD_GRALLOC_LIBS="
+lib/hw/android.hardware.graphics.mapper@4.0-impl-sgr.so
+lib/hw/gralloc.default.so
+lib/libeis_utils.so
+"
+WFD_GRALLOC_DONOR="$SRC_DIR/prebuilts/samsung/r0sxxx"
+for WFD_GRALLOC_LIB in $WFD_GRALLOC_LIBS; do
+    WFD_GRALLOC_SRC="$WFD_GRALLOC_DONOR/vendor/$WFD_GRALLOC_LIB"
+    if [ ! -f "$WFD_GRALLOC_SRC" ]; then
+        ABORT "Missing ARM32 gralloc donor lib: vendor/$WFD_GRALLOC_LIB"
+        return 1
+    fi
+    if ! LC_ALL=C readelf -h "$WFD_GRALLOC_SRC" 2>/dev/null | grep -q 'ELF32'; then
+        ABORT "ARM32 gralloc donor lib is not ELF32: $WFD_GRALLOC_LIB"
+        return 1
+    fi
+    ADD_TO_WORK_DIR "r0sxxx" "vendor" "$WFD_GRALLOC_LIB" \
+        0 2000 644 "u:object_r:same_process_hal_file:s0" || return 1
+done
+
+# libion_exynos.so is not donated because the target already ships a 32-bit
+# build of it in vendor/lib whose exported symbols cover the S22 one. That file
+# comes from the vendor partition of the same firmware payload the build
+# extracts, so it is present in a fresh build, but assert it rather than assume:
+# the mapper is dlopen'ed by the passthrough and would fail later at runtime.
+if [ ! -f "$WORK_DIR/vendor/lib/libion_exynos.so" ]; then
+    ABORT "Missing ARM32 vendor/lib/libion_exynos.so required by the gralloc mapper"
+    return 1
+fi
+
+# The graph validation below only walks DT_NEEDED, which cannot see the dlopen
+# that the HIDL passthrough performs. Check the symbol the passthrough actually
+# resolves, so a donor that stopped exporting it fails the build instead of
+# shipping an image that aborts on the first allocation.
+WFD_GRALLOC_IMPL="$WORK_DIR/vendor/lib/hw/android.hardware.graphics.mapper@4.0-impl-sgr.so"
+WFD_GRALLOC_STUB="$WORK_DIR/system/system/lib/android.hardware.graphics.mapper@4.0.so"
+
+if [ ! -f "$WFD_GRALLOC_IMPL" ]; then
+    ABORT "Missing ARM32 graphics mapper implementation, cannot validate passthrough"
+    return 1
+fi
+if [ ! -f "$WFD_GRALLOC_STUB" ]; then
+    ABORT "Missing ARM32 android.hardware.graphics.mapper@4.0.so passthrough stub"
+    return 1
+fi
+if ! readelf --dyn-syms -W "$WFD_GRALLOC_IMPL" 2>/dev/null | \
+        awk '{ print $NF }' | grep -qxF 'HIDL_FETCH_IMapper'; then
+    ABORT "ARM32 graphics mapper donor does not export HIDL_FETCH_IMapper"
+    return 1
+fi
+
+# Every V4_0::IMapper method the donor imports has to be provided by the target's
+# own passthrough stub. The two stubs are different builds, so verify the
+# interface instead of assuming the donor matches.
+WFD_GRALLOC_MISSING=""
+while IFS= read -r WFD_GRALLOC_SYM; do
+    [ "$WFD_GRALLOC_SYM" ] || continue
+    if ! readelf --dyn-syms -W "$WFD_GRALLOC_STUB" 2>/dev/null | \
+            awk '{ print $NF }' | grep -qxF "$WFD_GRALLOC_SYM"; then
+        WFD_GRALLOC_MISSING="$WFD_GRALLOC_MISSING$WFD_GRALLOC_SYM "
+    fi
+done <<< "$(readelf --dyn-syms -W "$WFD_GRALLOC_IMPL" 2>/dev/null | \
+    awk '$7 == "UND" { print $NF }' | grep -F 'V4_07IMapper' | sort -u)"
+
+if [ -n "$WFD_GRALLOC_MISSING" ]; then
+    ABORT "ARM32 passthrough stub does not provide: $WFD_GRALLOC_MISSING"
+    return 1
+fi
+LOG "  - ARM32 graphics mapper 4.0 passthrough validated against the target stub"
+
 # Reject incomplete or mixed-architecture dependency graphs during the build.
 declare -A ARM32_WFD_VALIDATED=()
 
@@ -397,7 +499,9 @@ unset R9S_WFD_LIBS R9S_WFD_LIB R9S_WFD_64_REMOVE R9S_WFD_64_LIB \
     WFD_I18N_LIBS WFD_I18N_LIB WFD_I18N_PAYLOAD WFD_I18N_MOUNTED \
     WFD_AUDIO_LIBS WFD_AUDIO_DONOR WFD_AUDIO_LIB WFD_AUDIO_SRC \
     WFD_AUDIO_TRACK_SYMBOL WFD_AUDIO_COMPAT WFD_AUDIO_TYPES_COMPAT \
-    WFD_AUDIO_NBLOG_COMPAT WFD_AUDIO_WFD_LIB
+    WFD_AUDIO_NBLOG_COMPAT WFD_AUDIO_WFD_LIB \
+    WFD_GRALLOC_LIBS WFD_GRALLOC_DONOR WFD_GRALLOC_LIB WFD_GRALLOC_SRC \
+    WFD_GRALLOC_IMPL WFD_GRALLOC_STUB WFD_GRALLOC_SYM WFD_GRALLOC_MISSING
 unset -f ADD_R11S_WFD_LIB VALIDATE_ARM32_WFD_ELF
 
 LOG_STEP_OUT

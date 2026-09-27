@@ -4074,3 +4074,158 @@ bind mount and no `setenv` in the `rc`.
 
 Not yet through a full build, and not yet verified with the init-run service
 after a reboot. That is the next step.
+
+## DeX ARM32 gralloc mapper: donor found in the S22 Exynos firmware
+
+The `dex2.txt` capture shows the audio donor work is complete and the abort
+moved forward. `/system/bin/remotedisplay` now links and the WFD session
+completes its handshake:
+
+```text
+PLAY rtsp://192.168.49.1/wfd1.0/streamid=0 RTSP/1.0
+RTSP/1.0 200 OK
+MediaPuller: [Audio] start
+```
+
+It then dies at the first video buffer allocation:
+
+```text
+Gralloc4: mapper 4.x is not supported
+GraphicBufferMapper: gralloc-mapper is missing
+Fatal signal 6 (SIGABRT), code -1 (SI_QUEUE) in tid 24394 (binder:24157_3), pid 24157 (remotedisplay)
+```
+
+`Gralloc4: mapper 4.x is not supported` is informational and also appears in
+ten other processes that keep running. `GraphicBufferMapper: gralloc-mapper is
+missing` is level `F` and appears only in the two remotedisplay PIDs, both of
+which abort. That line is the actual cause.
+
+The string lives in the ARM32 `/system/lib/libui.so`, but the library it loads
+is a **vendor** mapper, not a system library. The binary builds the name
+dynamically and logs `Failed to load mapper.%s.so`, with the literal prefixes
+`mapper.`, `mapper` and the instance suffix `/default` in `.rodata`. The
+relevant rodata offsets in `libui32.so` are `0x160ac` (`gralloc-mapper is
+missing`), `0x163cf` (`Failed to load mapper.%s.so`) and `0x163de` (`mapper.`).
+The same binary also carries `gralloc-mapper must be in passthrough mode` and
+the fallbacks `mapper 2.x is not supported` / `mapper 3.x is not supported`.
+
+The Snapdragon S23 Ultra firmware in `ota_applier/da_kicthen/out` is **not** a
+usable donor. Its manifest declares `android.hardware.graphics.mapper` 4.0 with
+`transport arch="32+64"` but the only implementation present is
+`android.hardware.graphics.mapper@4.0-impl-qti-display.so`, a Qualcomm display
+implementation built against Adreno. This target is Exynos 2400 and ships
+`android.hardware.graphics.mapper@4.0-impl-sgr.so`, which is the Mali/Exynos
+implementation. The two are not interchangeable.
+
+The Exynos S22 Ultra firmware in `ota_applier/s228.5` **is** a usable donor. Its
+images are F2FS rather than EROFS, so they were mounted read-only with
+`mount -o loop,ro` after `modprobe f2fs`, inspected, and unmounted afterwards.
+`vendor/lib/hw` contains both of the required ARM32 files:
+
+```text
+lib/hw/android.hardware.graphics.mapper@4.0-impl-sgr.so   ELF 32-bit LSB shared object, ARM
+lib/hw/gralloc.default.so                                  ELF 32-bit LSB shared object, ARM
+```
+
+and the `lib64` counterparts exist alongside them. The S22 vendor manifest also
+declares `<transport arch="32+64">passthrough` for
+`android.hardware.graphics.mapper` 4.0, which is what the ARM32 `libui`
+requires.
+
+The ARM32 mapper's `DT_NEEDED` closure is: `libbase.so`, `libcutils.so`,
+`libeis_utils.so`, `libgralloctypes.so`, `libhardware.so`, `libhidlbase.so`,
+`libion_exynos.so`, `liblog.so`, `libutils.so`,
+`android.hardware.graphics.mapper@4.0.so`, `libsync.so`, `libc++.so`, `libc.so`,
+`libm.so`, `libdl.so`. Its `SONAME` is
+`android.hardware.graphics.mapper@4.0-impl-sgr.so`. Every one of those
+dependencies is present in the S22 as 32-bit ARM in `system/system/lib`, which
+is the same donor layout used for the audio compat libraries.
+
+This matters because the target has no ARM32 closure of its own. In
+`out/fw/SM-S926B_EUX`, `system/system/lib`, `system/system/lib64` and
+`vendor/lib` hold **zero** `.so` files in some cases, and specifically:
+
+```text
+system/system/lib     0 .so
+vendor/lib            0 .so
+system/system/lib64   1311 .so
+vendor/lib64          649 .so
+```
+
+`libgralloctypes.so`, `android.hardware.graphics.mapper@4.0.so`,
+`libhidlbase.so`, `libbase.so` and `libhardware.so` exist **only** under
+`lib64` on the S926B. The only 32-bit graphics mapper in the target vendor is the
+old HIDL `vendor/lib/hw/android.hardware.graphics.mapper@2.0-impl-2.1.so`, which
+is too old for the Android 17 `libui`, hence `mapper 4.x is not supported`.
+
+So the Exynos 2400 never shipped an ARM32 gralloc mapper. That is precisely why
+the ARM32 `remotedisplay` needs donors, and why the audio donor alone was not
+enough. The S22 Exynos donor is the correct source for both the mapper and its
+32-bit dependency closure, and it matches the target's own `-impl-sgr` naming
+convention. This is the same private-donor, renamed-`SONAME`, `patchelf`
+`DT_NEEDED` approach already used for the audio compat libraries, so the two
+donor sets can be staged together.
+
+### Correction: only three files are needed, and they belong in vendor
+
+The section above assumed the whole `DT_NEEDED` closure had to be imported from
+the S22. That is wrong, and the investigation was corrected before any code was
+written.
+
+`libion_exynos.so` is **not** donated. The target already ships a 32-bit build
+in `vendor/lib` whose 20 exported symbols are a superset of the S22 one, with
+zero symbols missing. It comes from the vendor partition of the same firmware
+payload the build unpacks, so a fresh build has it, and the patch asserts it is
+present rather than assuming.
+
+The remaining `libbase.so`, `libcutils.so`, `libgralloctypes.so`,
+`libhardware.so`, `libhidlbase.so`, `liblog.so`, `libutils.so`,
+`android.hardware.graphics.mapper@4.0.so` and `libsync.so` are all already
+resolved into `/system/lib` by the existing r9s/r11s WFD closure, because the
+ARM32 `libui.so` and `libgralloctypes.so` declare them as `DT_NEEDED`. No
+second donor is involved.
+
+That leaves three files, all from the S22 `vendor` partition:
+
+```text
+lib/hw/android.hardware.graphics.mapper@4.0-impl-sgr.so   140880 bytes
+lib/hw/gralloc.default.so                                  11640 bytes
+lib/libeis_utils.so                                         2628 bytes
+```
+
+They are staged into `vendor`, not `system`, because the passthrough resolves the
+implementation in the vendor namespace. The canonical location on both the S22
+and the target is `vendor/lib/hw`, which is where the target's own ARM64
+`android.hardware.graphics.mapper@4.0-impl-sgr.so` and `gralloc.default.so`
+live. They carry `u:object_r:same_process_hal_file:s0`, matching the labels the
+target's own `vendor_file_contexts` already assigns to those two libraries, and
+uid/gid 2000 with mode 644.
+
+The S23 Ultra Snapdragon firmware remains excluded. Its manifest also declares
+`arch="32+64"` passthrough for mapper 4.0, but the only implementation it ships
+is `android.hardware.graphics.mapper@4.0-impl-qti-display.so`, a Qualcomm
+display implementation bound to Adreno, while this target is Exynos 2400 and
+uses `-impl-sgr` on Mali.
+
+### Why the passthrough will accept the S22 implementation
+
+The build-time check is deliberately not a version-string comparison. The two
+`android.hardware.graphics.mapper@4.0.so` stubs are different builds, 88336
+bytes for the S22 against 109608 for the target, so a name-based match proves
+nothing. The S22 stub is a strict subset of the target stub: every symbol it
+defines also exists in the target, and the target adds two more
+(`details::castInterface` and `details::StatusOf<bool, sp<IMapper>>`). Checking
+the direction that matters, the set of `V4_0::IMapper` methods the S22
+implementation imports as `UND` is fully satisfied by the target stub, with zero
+missing. The patch asserts exactly that, plus the `HIDL_FETCH_IMapper` symbol
+that the passthrough resolves through.
+
+The implementation is the newer HIDL codegen, exporting `HIDL_FETCH_IMapper`
+and a `V4_0::Mapper` class while importing the `IMapper` interface from the
+stub, which is the contract the target's passthrough expects.
+
+Static verification: `bash -n` clean, all three libraries ELF32 ARM, the
+`HIDL_FETCH_IMapper` symbol present, the full `DT_NEEDED` closure resolvable,
+9 of 9 checks passing in a staged simulation including a negative test with a
+deliberately corrupted stub, and the staging step is idempotent with
+byte-identical artifacts across two runs. Not yet built or flashed.
