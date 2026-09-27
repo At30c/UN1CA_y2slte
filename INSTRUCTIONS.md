@@ -4229,3 +4229,108 @@ Static verification: `bash -n` clean, all three libraries ELF32 ARM, the
 9 of 9 checks passing in a staged simulation including a negative test with a
 deliberately corrupted stub, and the staging step is idempotent with
 byte-identical artifacts across two runs. Not yet built or flashed.
+
+### Root cause: staging the library was not the missing piece
+
+The first build with the three donor libraries still aborted identically. The
+new log carries the line that explains it, one line above the abort:
+
+```
+hwservicemanager: getTransport: Cannot find entry
+  android.hardware.graphics.mapper@4.0::IMapper/default in either framework
+  or device VINTF manifest.
+Gralloc4: mapper 4.x is not supported
+GraphicBufferMapper: gralloc-mapper is missing
+```
+
+`getTransport` is answered from VINTF, and the target's
+`/vendor/etc/vintf/manifest.xml` only declares mapper `2.1`:
+
+```xml
+<hal format="hidl">
+    <name>android.hardware.graphics.mapper</name>
+    <transport arch="32+64">passthrough</transport>
+    <version>2.1</version>
+    ...
+    <fqname>@2.1::IMapper/default</fqname>
+</hal>
+```
+
+So the passthrough lookup fails before any `dlopen` happens, which is why the
+donor was never even attempted and why no linker error appears in the log. The
+library being present, correctly labelled and correctly named was necessary but
+not sufficient. This was called out as an open risk before the build and should
+have been implemented in the same change.
+
+### Why the S22 declaration cannot be copied verbatim
+
+The S22 is Gralloc4 on both architectures and its manifest declares only 4.0.
+The target cannot do that. Its 64-bit vendor stack is Gralloc2:
+
+- `/vendor/lib64/hw` carries only `android.hardware.graphics.mapper@2.0-impl-2.1.so`.
+- Both the 32-bit and the 64-bit `libui.so` contain the string
+  `mapper 4.x is not supported` and both import `V4_0::IMapper::getService`.
+
+Today every 64-bit process tries Gralloc4, fails the lookup, logs that line and
+falls back to 2.1, which is why the rest of the system works. Replacing the 2.1
+entry with 4.0 for `32+64` would leave the 64-bit side with neither 4.0 nor a
+declared 2.1 fallback, breaking working graphics.
+
+The patch therefore narrows the existing entry to `arch="64"` and adds a second
+entry with `arch="32"`. `/system/bin/remotedisplay` is an ELF 32-bit ARM PIE, so
+it is the only consumer of the new entry, and the 64-bit path keeps the 2.1
+fallback exactly as it is today. The rewrite is done with an awk pass that
+buffers each `<hal>...</hal>` pair, because `android.hardware.graphics.renderscript`
+uses the same `arch="32+64"` passthrough form and must keep both architectures.
+It aborts the build unless exactly one mapper block is found, unless exactly one
+2.1 and one 4.0 fqname end up present, and it is idempotent.
+
+### Confirming the library name without any AOSP source
+
+`android.hardware.graphics.mapper@4.0-impl-sgr.so` had to be the right file
+name, and the implementation is closed-source Samsung code, so it could not be
+read. Three independent checks agree:
+
+- `lshal` on the flashed build reports
+  `X ? android.hardware.graphics.mapper@4.0::I*/* (/vendor/lib/hw/) (-sgr)`,
+  deriving the `-sgr` passthrough suffix from the library present in
+  `/vendor/lib/hw/`.
+- Neither the target's nor the S22's ARM32 `libui.so` contains an `sgr` literal.
+  Both only carry `Failed to load mapper.%s.so`, so the suffix is resolved at
+  runtime, which is consistent with the name coming from the VINTF declaration
+  rather than from a hardcoded string.
+- The S22 works with exactly this file name and a 4.0 passthrough declaration.
+
+### Runtime testing was not possible, and why
+
+The fix was validated on the device with a bind mount of a patched
+`/vendor/etc/vintf/manifest.xml`, mirroring what was done for the camera
+feature. It could not be completed:
+
+- `/vendor` is EROFS, so a file cannot be created there. Binding the whole
+  `/vendor/etc/vintf/manifest` directory works, but the first attempt used
+  symlinks to the original fragments, which resolve to themselves once the
+  directory is mounted over, so `hwservicemanager` saw a broken tree. Copying
+  the fragments for real and fixing the SELinux context to `vendor_file` fixed
+  that part.
+- `hwservicemanager` reads VINTF once at startup, so the manifest must be in
+  place before boot. `setprop ctl.restart hwservicemanager` does apply it but
+  reboots the device, which destroys the mount. Surviving a reboot was tried
+  with both a KernelSU module (`post-fs-data.sh`) and
+  `/data/adb/post-fs-data.d/`; neither mechanism executes on this setup, as the
+  marker file the scripts were supposed to create never appeared.
+- The `arch="32"` fragment test was inconclusive rather than negative: the
+  `Cannot find entry` lines in that window came from 64-bit callers, which
+  correctly do not match an `arch="32"` declaration, and `remotedisplay` was
+  never started during it.
+
+All test artifacts were removed afterwards; the device was left with no mount
+and no leftover files.
+
+The VINTF block is verified statically against the real target manifest: 11 of
+11 checks pass, including that the 2.1 entry is narrowed rather than
+duplicated, that `renderscript` is untouched, that the result is valid XML, that
+the temp file is cleaned up, that a second run is a no-op, and that a manifest
+without a mapper 2.1 entry aborts the build. The remaining unknown is whether
+the S22 mapper drives the Exynos 2400 gralloc correctly once it loads, which
+only a real DeX session can answer.

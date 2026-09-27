@@ -444,6 +444,132 @@ if [ -n "$WFD_GRALLOC_MISSING" ]; then
 fi
 LOG "  - ARM32 graphics mapper 4.0 passthrough validated against the target stub"
 
+# Staging the mapper is not enough on its own. hwservicemanager answers the
+# passthrough lookup straight from VINTF, and it has nothing to return while the
+# device manifest only declares mapper 2.1:
+#
+#   hwservicemanager: getTransport: Cannot find entry
+#     android.hardware.graphics.mapper@4.0::IMapper/default in either framework
+#     or device VINTF manifest.
+#   Gralloc4: mapper 4.x is not supported
+#   GraphicBufferMapper: gralloc-mapper is missing
+#
+# That getTransport failure is what kills remotedisplay, and it happens before
+# any dlopen, which is why the donor library is never even attempted. The S22
+# ships mapper 4.0 as <transport arch="32+64">passthrough, which is the
+# declaration the passthrough resolves.
+#
+# The target cannot simply adopt the S22 declaration verbatim. Its 64-bit
+# vendor stack is Gralloc2: /vendor/lib64/hw only carries the old
+# android.hardware.graphics.mapper@2.0-impl-2.1.so, and both the 32-bit and the
+# 64-bit libui log "mapper 4.x is not supported" today and fall back to 2.1,
+# which is why the rest of the system works. Overwriting 2.1 with 4.0 for both
+# architectures would strip the 64-bit fallback and break working graphics.
+#
+# So the existing 2.1 entry is narrowed to arch="64" and a second 4.0 entry is
+# added for arch="32". remotedisplay is a 32-bit PIE, so it is the only consumer
+# of the new entry, and the 64-bit path keeps the 2.1 fallback untouched.
+WFD_VINTF="$WORK_DIR/vendor/etc/vintf/manifest.xml"
+WFD_VINTF_NEW='    <hal format="hidl">
+        <name>android.hardware.graphics.mapper</name>
+        <transport arch="32">passthrough</transport>
+        <version>4.0</version>
+        <interface>
+            <name>IMapper</name>
+            <instance>default</instance>
+        </interface>
+        <fqname>@4.0::IMapper/default</fqname>
+    </hal>'
+
+if [ ! -f "$WFD_VINTF" ]; then
+    ABORT "Missing $WFD_VINTF, cannot register the ARM32 mapper 4.0 passthrough"
+    return 1
+fi
+
+if grep -qF '@4.0::IMapper/default' "$WFD_VINTF"; then
+    LOG "  - mapper 4.0 passthrough already declared for ARM32"
+else
+    if ! grep -qF '@2.1::IMapper/default' "$WFD_VINTF"; then
+        ABORT "Unexpected VINTF: no mapper 2.1 entry to narrow to ARM64"
+        return 1
+    fi
+
+    # Rewrite only the mapper block. awk buffers each <hal>...</hal> pair so the
+    # arch rewrite cannot leak onto the renderscript passthrough, which shares
+    # the same arch="32+64" passthrough form and must keep both architectures.
+    # Count the candidate blocks first. This pass prints nothing but the count,
+    # so the value captured below cannot be polluted by the document itself.
+    WFD_VINTF_FOUND="$(awk '
+        /<hal[ >]/ { inblock = 1; blk = $0 ORS; next }
+        inblock {
+            blk = blk $0 ORS
+            if ($0 ~ /<\/hal>/) {
+                if (blk ~ /android\.hardware\.graphics\.mapper/ && blk !~ /@4\.0::IMapper/) {
+                    found++
+                }
+                inblock = 0
+                blk = ""
+            }
+            next
+        }
+        END { print found + 0 }
+    ' "$WFD_VINTF")"
+
+    if [ "$WFD_VINTF_FOUND" != "1" ]; then
+        ABORT "Expected exactly one mapper 2.1 hal block in VINTF, found $WFD_VINTF_FOUND"
+        return 1
+    fi
+
+    WFD_VINTF_TMP="$WFD_VINTF.zzwfd.tmp"
+    awk -v add40="$WFD_VINTF_NEW" '
+        /<hal[ >]/ { inblock = 1; blk = $0 ORS; next }
+        inblock {
+            blk = blk $0 ORS
+            if ($0 ~ /<\/hal>/) {
+                if (blk ~ /android\.hardware\.graphics\.mapper/ && blk !~ /@4\.0::IMapper/) {
+                    gsub(/arch="32\+64"/, "arch=\"64\"", blk)
+                    printf "%s", blk
+                    printf "%s\n", add40
+                } else {
+                    printf "%s", blk
+                }
+                inblock = 0
+                blk = ""
+            }
+            next
+        }
+        { print }
+    ' "$WFD_VINTF" > "$WFD_VINTF_TMP" || {
+        ABORT "Failed to rewrite the mapper block in VINTF"
+        rm -f "$WFD_VINTF_TMP"
+        return 1
+    }
+
+    if ! grep -qF '@4.0::IMapper/default' "$WFD_VINTF_TMP" || \
+            ! grep -qF '<fqname>@2.1::IMapper/default</fqname>' "$WFD_VINTF_TMP"; then
+        ABORT "VINTF rewrite did not produce the expected mapper entries"
+        rm -f "$WFD_VINTF_TMP"
+        return 1
+    fi
+
+    # The legacy entry must keep working for ARM64, so the rewrite is only
+    # accepted if 2.1 really ended up narrowed instead of duplicated.
+    if [ "$(grep -cF '<fqname>@2.1::IMapper/default</fqname>' "$WFD_VINTF_TMP")" != "1" ] || \
+            [ "$(grep -cF '<fqname>@4.0::IMapper/default</fqname>' "$WFD_VINTF_TMP")" != "1" ]; then
+        ABORT "VINTF rewrite changed the number of mapper entries"
+        rm -f "$WFD_VINTF_TMP"
+        return 1
+    fi
+
+    cat "$WFD_VINTF_TMP" > "$WFD_VINTF" || {
+        ABORT "Failed to install the rewritten VINTF"
+        rm -f "$WFD_VINTF_TMP"
+        return 1
+    }
+    rm -f "$WFD_VINTF_TMP"
+    LOG "  - mapper 2.1 narrowed to ARM64, mapper 4.0 passthrough added for ARM32"
+fi
+
 # Reject incomplete or mixed-architecture dependency graphs during the build.
 declare -A ARM32_WFD_VALIDATED=()
 
@@ -501,7 +627,8 @@ unset R9S_WFD_LIBS R9S_WFD_LIB R9S_WFD_64_REMOVE R9S_WFD_64_LIB \
     WFD_AUDIO_TRACK_SYMBOL WFD_AUDIO_COMPAT WFD_AUDIO_TYPES_COMPAT \
     WFD_AUDIO_NBLOG_COMPAT WFD_AUDIO_WFD_LIB \
     WFD_GRALLOC_LIBS WFD_GRALLOC_DONOR WFD_GRALLOC_LIB WFD_GRALLOC_SRC \
-    WFD_GRALLOC_IMPL WFD_GRALLOC_STUB WFD_GRALLOC_SYM WFD_GRALLOC_MISSING
+    WFD_GRALLOC_IMPL WFD_GRALLOC_STUB WFD_GRALLOC_SYM WFD_GRALLOC_MISSING \
+    WFD_VINTF WFD_VINTF_NEW WFD_VINTF_TMP WFD_VINTF_FOUND
 unset -f ADD_R11S_WFD_LIB VALIDATE_ARM32_WFD_ELF
 
 LOG_STEP_OUT
