@@ -42,6 +42,87 @@ while IFS= read -r R9S_WFD_LIB; do
         0 0 644 "u:object_r:system_lib_file:s0" || return 1
 done <<< "$R9S_WFD_LIBS"
 
+# The ARM32 RemoteDisplay stack links against the ARM32 libmedia, and that
+# libmedia needs the ARM32 libandroidicu shim. The source i18n APEX only ships
+# the ARM64 variant, because the S24+ has no ARM32 media stack at all, so the
+# ARM32 closure has to be imported from a donor that does provide one.
+#
+# Without it the linker rejects /system/bin/remotedisplay with
+# `library "libandroidicu.so" not found: needed by /system/lib/libmedia.so`,
+# remotedisplay is restarted every five seconds, and DeX never comes up.
+WFD_I18N_DONOR=""
+for WFD_I18N_CANDIDATE in r11sxxx r9sxxx; do
+    if [ -f "$SRC_DIR/prebuilts/samsung/$WFD_I18N_CANDIDATE/system/apex/com.android.i18n.apex" ]; then
+        WFD_I18N_DONOR="$WFD_I18N_CANDIDATE"
+        break
+    fi
+done
+
+if [ -z "$WFD_I18N_DONOR" ]; then
+    LOGE "No donor provides an i18n APEX for the ARM32 WFD stack"
+    return 1
+fi
+
+WFD_I18N_APEX="$SRC_DIR/prebuilts/samsung/$WFD_I18N_DONOR/system/apex/com.android.i18n.apex"
+WFD_I18N_TMP="$TMP_DIR/wfd_i18n"
+WFD_I18N_LIBS="libandroidicu.so libicuuc.so libicui18n.so libicu.so"
+
+rm -rf "$WFD_I18N_TMP"
+mkdir -p "$WFD_I18N_TMP/apex" "$WFD_I18N_TMP/mnt" "$WFD_I18N_TMP/system/lib"
+
+if unzip -l "$WFD_I18N_APEX" original_apex 2> /dev/null | grep -q "original_apex"; then
+    unzip -p "$WFD_I18N_APEX" original_apex > "$WFD_I18N_TMP/original.apex" || return 1
+    unzip -o -q "$WFD_I18N_TMP/original.apex" apex_payload.img -d "$WFD_I18N_TMP/apex" || return 1
+else
+    unzip -o -q "$WFD_I18N_APEX" apex_payload.img -d "$WFD_I18N_TMP/apex" || return 1
+fi
+
+WFD_I18N_PAYLOAD="$WFD_I18N_TMP/apex/apex_payload.img"
+if [ ! -f "$WFD_I18N_PAYLOAD" ]; then
+    LOGE "Donor $WFD_I18N_DONOR i18n APEX has no apex_payload.img"
+    return 1
+fi
+
+WFD_I18N_MOUNTED=false
+if command -v debugfs > /dev/null 2>&1; then
+    WFD_I18N_READ() {
+        debugfs -R "dump $1 $2" "$WFD_I18N_PAYLOAD" > /dev/null 2>&1
+    }
+elif sudo -n mount -o ro "$WFD_I18N_PAYLOAD" "$WFD_I18N_TMP/mnt" 2> /dev/null; then
+    # e2fsprogs is not guaranteed on the build host, so fall back to mounting
+    # the payload the way the tethering APEX patch already does.
+    WFD_I18N_MOUNTED=true
+    WFD_I18N_READ() {
+        cp -a -f "$WFD_I18N_TMP/mnt$1" "$2"
+    }
+else
+    ABORT "Neither debugfs nor a usable sudo mount is available to read the i18n APEX"
+    return 1
+fi
+
+for WFD_I18N_LIB in $WFD_I18N_LIBS; do
+    WFD_I18N_READ "/lib/$WFD_I18N_LIB" "$WFD_I18N_TMP/system/lib/$WFD_I18N_LIB"
+
+    if [ ! -f "$WFD_I18N_TMP/system/lib/$WFD_I18N_LIB" ]; then
+        ABORT "Donor $WFD_I18N_DONOR i18n APEX has no ARM32 /lib/$WFD_I18N_LIB"
+        return 1
+    fi
+
+    if ! LC_ALL=C readelf -h "$WFD_I18N_TMP/system/lib/$WFD_I18N_LIB" 2> /dev/null | grep -q 'ELF32'; then
+        ABORT "Donor $WFD_I18N_DONOR i18n /lib/$WFD_I18N_LIB is not ELF32"
+        return 1
+    fi
+
+    ADD_TO_WORK_DIR "$WFD_I18N_TMP" "system" "system/lib/$WFD_I18N_LIB" \
+        0 0 644 "u:object_r:system_lib_file:s0" || return 1
+done
+
+if $WFD_I18N_MOUNTED; then
+    sudo umount "$WFD_I18N_TMP/mnt" || true
+fi
+rm -rf "$WFD_I18N_TMP"
+unset -f WFD_I18N_READ
+
 # R9s advertises WFD R2/HEVC, while the target encoder uses the legacy native
 # metadata layout. Skip the R2 capability fields in sendM3().
 HEX_PATCH "$WORK_DIR/system/system/lib/libremotedisplay_wfd.so" \
@@ -189,7 +270,7 @@ VALIDATE_ARM32_WFD_ELF()
 
     while read -r NEEDED_LIB; do
         case "$NEEDED_LIB" in
-            libc.so|libdl.so|libdl_android.so|libm.so|libandroidicu.so)
+            libc.so|libdl.so|libdl_android.so|libm.so)
                 continue
                 ;;
         esac
@@ -215,7 +296,9 @@ VALIDATE_ARM32_WFD_ELF \
 LOG "  - ARM32 RemoteDisplay dependency graph validated"
 
 unset R9S_WFD_LIBS R9S_WFD_LIB R9S_WFD_64_REMOVE R9S_WFD_64_LIB \
-    WFD_RUNTIME_ROOT WFD_IMPORTED ARM32_WFD_VALIDATED
+    WFD_RUNTIME_ROOT WFD_IMPORTED ARM32_WFD_VALIDATED \
+    WFD_I18N_DONOR WFD_I18N_CANDIDATE WFD_I18N_APEX WFD_I18N_TMP \
+    WFD_I18N_LIBS WFD_I18N_LIB WFD_I18N_PAYLOAD WFD_I18N_MOUNTED
 unset -f ADD_R11S_WFD_LIB VALIDATE_ARM32_WFD_ELF
 
 LOG_STEP_OUT
