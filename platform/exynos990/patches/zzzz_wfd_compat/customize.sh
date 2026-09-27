@@ -248,59 +248,99 @@ done
 
 # The r9s ARM32 WFD stack was built against the Android 16 audio client, which
 # still exports the 16-argument AudioTrack constructor. Android 17 removed that
-# overload, so ld.so rejects libremotedisplay_wfd.so and DeX never starts. Z3sxxx
+# overload, so ld.so rejects libremotedisplay_wfd.so and DeX never starts. R0sxxx
 # is still Android 16 and its ARM32 audio client closure is three libraries.
 #
-# They land in a private directory instead of /system/lib so the rest of the
-# system keeps the target's own libaudioclient. Only the remotedisplay service
-# loads them, through LD_LIBRARY_PATH set in remotedisplay.rc further down.
+# A private LD_LIBRARY_PATH directory does not work here: init-launched native
+# services do not pick up the variable, so ld.so resolved the DT_NEEDED
+# libaudioclient.so from the default path and the import stayed unresolved.
+#
+# Instead, give the donor libraries private SONAMEs inside /system/lib, which is
+# already on the default search path, and repoint libremotedisplay_wfd.so at
+# them. The target's own libaudioclient.so and its V5 audio types library stay
+# untouched for every other process, which is the same isolation trick the
+# target suspend bridge uses in patches/miscs.
 WFD_AUDIO_LIBS="
-libaudioclient.so
-libnblog.so
-android.media.audio.common.types-V4-cpp.so
+libaudioclient_wfd_compat.so
+libnblog_wfd_compat.so
+android.media.audio.common.types-V4-cpp-wfd_compat.so
 "
 WFD_AUDIO_DONOR="$SRC_DIR/prebuilts/samsung/r0sxxx"
 for WFD_AUDIO_LIB in $WFD_AUDIO_LIBS; do
-    WFD_AUDIO_SRC="$WFD_AUDIO_DONOR/system/lib/wfd/$WFD_AUDIO_LIB"
+    WFD_AUDIO_SRC="$WFD_AUDIO_DONOR/system/lib/$WFD_AUDIO_LIB"
     if [ ! -f "$WFD_AUDIO_SRC" ]; then
-        ABORT "Missing ARM32 audio client donor lib: system/lib/wfd/$WFD_AUDIO_LIB"
+        ABORT "Missing ARM32 audio client donor lib: system/lib/$WFD_AUDIO_LIB"
         return 1
     fi
     if ! LC_ALL=C readelf -h "$WFD_AUDIO_SRC" 2>/dev/null | grep -q 'ELF32'; then
         ABORT "ARM32 audio client donor lib is not ELF32: $WFD_AUDIO_LIB"
         return 1
     fi
-    ADD_TO_WORK_DIR "r0sxxx" "system" "system/lib/wfd/$WFD_AUDIO_LIB" || return 1
+    ADD_TO_WORK_DIR "r0sxxx" "system" "system/lib/$WFD_AUDIO_LIB" || return 1
 done
+
+WFD_AUDIO_COMPAT="$WORK_DIR/system/system/lib/libaudioclient_wfd_compat.so"
+WFD_AUDIO_TYPES_COMPAT="$WORK_DIR/system/system/lib/android.media.audio.common.types-V4-cpp-wfd_compat.so"
+WFD_AUDIO_NBLOG_COMPAT="$WORK_DIR/system/system/lib/libnblog_wfd_compat.so"
+WFD_AUDIO_WFD_LIB="$WORK_DIR/system/system/lib/libremotedisplay_wfd.so"
+
+if ! command -v patchelf > /dev/null 2>&1; then
+    ABORT "patchelf is required for the ARM32 WFD audio client"
+    return 1
+fi
+if [ ! -f "$WFD_AUDIO_WFD_LIB" ]; then
+    ABORT "Missing libremotedisplay_wfd.so, cannot redirect its audio client"
+    return 1
+fi
 
 # The graph validation below only walks DT_NEEDED, which is why a donor whose
 # audio client had already dropped the old overload shipped as a working build
 # that could not start. Check the symbol the WFD library actually imports.
 WFD_AUDIO_TRACK_SYMBOL="_ZN7android10AudioTrackC1E19audio_stream_type_tj14audio_format_t20audio_channel_mask_tj20audio_output_flags_tRKNS_2wpINS0_19IAudioTrackCallbackEEEi15audio_session_tNS0_13transfer_typeEPK20audio_offload_info_tRKNS_7content22AttributionSourceStateEPK18audio_attributes_tbfi"
-if ! readelf --dyn-syms -W "$WFD_AUDIO_DONOR/system/lib/wfd/libaudioclient.so" 2>/dev/null | \
+if ! readelf --dyn-syms -W "$WFD_AUDIO_COMPAT" 2>/dev/null | \
         awk '{ print $NF }' | grep -qxF "$WFD_AUDIO_TRACK_SYMBOL"; then
-    ABORT "r0sxxx libaudioclient.so does not export the 16-argument AudioTrack constructor"
+    ABORT "r0sxxx libaudioclient_wfd_compat.so does not export the 16-argument AudioTrack constructor"
     return 1
 fi
-LOG "  - ARM32 audio client staged in system/lib/wfd"
 
-# Point the service at the private directory. LD_LIBRARY_PATH is searched before
-# the default paths, so remotedisplay picks up the r0sxxx audio client while every
-# other process keeps the target's own.
-WFD_RC="$WORK_DIR/system/system/etc/init/remotedisplay.rc"
-if [ ! -f "$WFD_RC" ]; then
-    ABORT "Missing remotedisplay.rc, cannot set LD_LIBRARY_PATH for the WFD audio client"
+patchelf --set-soname "libaudioclient_wfd_compat.so" \
+    "$WFD_AUDIO_COMPAT" || return 1
+patchelf --set-soname "android.media.audio.common.types-V4-cpp-wfd_compat.so" \
+    "$WFD_AUDIO_TYPES_COMPAT" || return 1
+patchelf --set-soname "libnblog_wfd_compat.so" \
+    "$WFD_AUDIO_NBLOG_COMPAT" || return 1
+
+# The donor closure wants the V4 audio types library and libnblog, and the target
+# ships V5 plus no ARM32 libnblog at all. Redirect both to the private copies.
+if readelf -d "$WFD_AUDIO_COMPAT" 2>/dev/null | \
+        grep -q "NEEDED.*android.media.audio.common.types-V4-cpp.so"; then
+    patchelf --replace-needed "android.media.audio.common.types-V4-cpp.so" \
+        "android.media.audio.common.types-V4-cpp-wfd_compat.so" \
+        "$WFD_AUDIO_COMPAT" || return 1
+fi
+if readelf -d "$WFD_AUDIO_COMPAT" 2>/dev/null | grep -q "NEEDED.*libnblog.so"; then
+    patchelf --replace-needed "libnblog.so" "libnblog_wfd_compat.so" \
+        "$WFD_AUDIO_COMPAT" || return 1
+fi
+
+# Redirect the only importer of the old AudioTrack constructor. libremotedisplay
+# _wfd is the single WFD library that needs it, so no other DT_NEEDED changes.
+if readelf -d "$WFD_AUDIO_WFD_LIB" 2>/dev/null | \
+        grep -q "NEEDED.*\[libaudioclient.so\]"; then
+    patchelf --replace-needed "libaudioclient.so" \
+        "libaudioclient_wfd_compat.so" "$WFD_AUDIO_WFD_LIB" || return 1
+elif ! readelf -d "$WFD_AUDIO_WFD_LIB" 2>/dev/null | \
+        grep -q "NEEDED.*\[libaudioclient_wfd_compat.so\]"; then
+    ABORT "libremotedisplay_wfd.so does not link against the ARM32 audio client"
     return 1
 fi
-if ! grep -q "LD_LIBRARY_PATH" "$WFD_RC"; then
-    sed -i '/^service remotedisplay \/system\/bin\/remotedisplay$/a\    setenv LD_LIBRARY_PATH /system/lib/wfd' \
-        "$WFD_RC" || return 1
-fi
-if ! grep -q "setenv LD_LIBRARY_PATH /system/lib/wfd" "$WFD_RC"; then
-    ABORT "Could not add LD_LIBRARY_PATH to remotedisplay.rc"
+
+if ! readelf --dyn-syms -W "$WFD_AUDIO_WFD_LIB" 2>/dev/null | \
+        grep -q "UND $WFD_AUDIO_TRACK_SYMBOL"; then
+    ABORT "libremotedisplay_wfd.so no longer imports the 16-argument AudioTrack constructor"
     return 1
 fi
-LOG "  - remotedisplay.rc now uses the r0sxxx audio client"
+LOG "  - libremotedisplay_wfd.so redirected to libaudioclient_wfd_compat.so"
 
 # Reject incomplete or mixed-architecture dependency graphs during the build.
 declare -A ARM32_WFD_VALIDATED=()
@@ -355,8 +395,9 @@ unset R9S_WFD_LIBS R9S_WFD_LIB R9S_WFD_64_REMOVE R9S_WFD_64_LIB \
     WFD_RUNTIME_ROOT WFD_IMPORTED ARM32_WFD_VALIDATED \
     WFD_I18N_DONOR WFD_I18N_CANDIDATE WFD_I18N_APEX WFD_I18N_TMP \
     WFD_I18N_LIBS WFD_I18N_LIB WFD_I18N_PAYLOAD WFD_I18N_MOUNTED \
-    WFD_AUDIO_LIBS WFD_AUDIO_DONOR WFD_AUDIO_TMP WFD_AUDIO_LIB \
-    WFD_AUDIO_SRC WFD_AUDIO_TRACK_SYMBOL WFD_RC
+    WFD_AUDIO_LIBS WFD_AUDIO_DONOR WFD_AUDIO_LIB WFD_AUDIO_SRC \
+    WFD_AUDIO_TRACK_SYMBOL WFD_AUDIO_COMPAT WFD_AUDIO_TYPES_COMPAT \
+    WFD_AUDIO_NBLOG_COMPAT WFD_AUDIO_WFD_LIB
 unset -f ADD_R11S_WFD_LIB VALIDATE_ARM32_WFD_ELF
 
 LOG_STEP_OUT

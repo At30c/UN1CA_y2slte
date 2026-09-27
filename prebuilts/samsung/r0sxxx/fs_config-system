@@ -1,5 +1,4 @@
 system/lib 0 0 755 capabilities=0x0
-system/lib/wfd 0 0 755 capabilities=0x0
-system/lib/wfd/libaudioclient.so 0 0 644 capabilities=0x0
-system/lib/wfd/libnblog.so 0 0 644 capabilities=0x0
-system/lib/wfd/android.media.audio.common.types-V4-cpp.so 0 0 644 capabilities=0x0
+system/lib/libaudioclient_wfd_compat.so 0 0 644 capabilities=0x0
+system/lib/libnblog_wfd_compat.so 0 0 644 capabilities=0x0
+system/lib/android.media.audio.common.types-V4-cpp-wfd_compat.so 0 0 644 capabilities=0x0

@@ -3893,9 +3893,9 @@ from, not after the vendor props. An audio client is not a vendor library.
 Only three files were taken. This is not a general donor:
 
 ```text
-prebuilts/samsung/r0sxxx/system/lib/wfd/libaudioclient.so
-prebuilts/samsung/r0sxxx/system/lib/wfd/libnblog.so
-prebuilts/samsung/r0sxxx/system/lib/wfd/android.media.audio.common.types-V4-cpp.so
+prebuilts/samsung/r0sxxx/system/lib/libaudioclient_wfd_compat.so
+prebuilts/samsung/r0sxxx/system/lib/libnblog_wfd_compat.so
+prebuilts/samsung/r0sxxx/system/lib/android.media.audio.common.types-V4-cpp-wfd_compat.so
 prebuilts/samsung/r0sxxx/fs_config-system
 prebuilts/samsung/r0sxxx/file_context-system
 ```
@@ -3907,79 +3907,144 @@ resolve in `/system/lib`, `/system/lib64` or the media apex, and exactly two
 are missing, which are the two shipped here. So these three files are the
 complete gap.
 
+The donor files are stored under the `-compat` names they carry in the final
+image; only the SONAME and `DT_NEEDED` rewrites are done at build time, so the
+donor itself stays byte-identical to what was extracted.
+
 A known residual risk: the target system ships
 `android.media.audio.common.types-V5-cpp.so`, and this donor pulls V4 of that
 library into `remotedisplay`, so V4 and V5 of the same media audio types end
-up loaded in one process. The service starts and stays up with that
-combination, so it is not immediately fatal, but it is untested against a
-real DeX session. If audio init inside a session ever faults, that mismatch is
-the first thing to look at.
+up loaded in one process. The private `-compat` name keeps them apart, which is
+safer than the earlier private-directory attempt, but the combination is still
+untested against a real DeX session. If audio init inside a session ever faults,
+that mismatch is the first thing to look at.
 
 ### Loading the donor audio client in remotedisplay only (2026-09-27)
 
 The fix is deliberately scoped to the one service that needs the old audio
-client. The three libraries are staged into a private `/system/lib/wfd`, and
-`remotedisplay.rc` is given `setenv LD_LIBRARY_PATH /system/lib/wfd`, which
-the dynamic linker searches before the default paths. No other process sees
-these libraries, so the Android 17 system-wide audio stack is left alone.
+client. The three libraries get private SONAMEs inside `/system/lib`, and
+`libremotedisplay_wfd.so` is repointed at them with `patchelf`. The target's own
+`libaudioclient.so` and its V5 audio types library are never touched, so the
+Android 17 system-wide audio stack is left alone.
 
-A `DT_NEEDED` graph check is not sufficient to validate this. The existing
-WFD validation passed on a build that shipped and could not start, because a
-library that is entirely absent still leaves an otherwise satisfiable graph.
-The build now asserts the donor exports the exact symbol:
+#### Why LD_LIBRARY_PATH does not work here
 
-```sh
-readelf --dyn-syms -W libaudioclient.so | awk '{ print $NF }' | \
-    grep -qxF "$WFD_AUDIO_TRACK_SYMBOL"
+The first attempt staged the donor libraries in a private `/system/lib/wfd` and
+added `setenv LD_LIBRARY_PATH /system/lib/wfd` to `remotedisplay.rc`. The build
+was correct on paper: the files landed with the right modes and SELinux labels,
+`init` parsed the `rc`, and the same directory worked by hand from a shell. The
+init-run service still died with
+
+```text
+CANNOT LINK EXECUTABLE "/system/bin/remotedisplay": cannot locate symbol
+"_ZN7android10AudioTrackC1E19audio_stream_type_tj14audio_format_t20audio_channel_mask_tj20audio_output_flags_tRKNS_2wpINS0_19IAudioTrackCallbackEEEi15audio_session_tNS0_13transfer_typeEPK20audio_offload_info_tRKNS_7content22AttributionSourceStateEPK18audio_attributes_tbfi"
+referenced by "/system/lib/libremotedisplay_wfd.so"
 ```
 
-`awk '{print $NF}'` plus `grep -qxF` compares whole lines, which is what makes
-the check reject the Android 17 library instead of accepting it as a
-substring.
+which means the linker never looked at the private directory at all. It resolved
+the `DT_NEEDED` entry `libaudioclient.so` from the default path and reported the
+missing import against that copy.
+
+What ruled out the alternatives:
+
+- `/system/bin/remotedisplay` is a 4676-byte ARM32 stub with no `DT_RPATH` and
+  no `DT_RUNPATH`, and it does not link `libaudioclient.so` directly. It only
+  pulls `libremotedisplay_wfd.so`, so no `RPATH` could be shadowing the search
+  order.
+- Only `libremotedisplay_wfd.so` imports the 16-argument constructor; no other
+  WFD library needs repointing.
+- There is no duplicate `remotedisplay` service and no other
+  `LD_LIBRARY_PATH` in the image.
+- No `avc: denied` appears for the process.
+
+The variable is also useless for a debug workaround: bionic filters
+`LD_LIBRARY_PATH` against the namespace's permitted paths, so pointing it at
+`/data/local/tmp` is silently ignored. Only a path the namespace permits, such
+as `/system/lib/wfd`, has any effect. That is why a hand-run test from
+`/data/local/tmp` behaved differently from the init-run service and looked like
+a contradiction.
+
+Since `setenv` in the `rc` cannot be relied on and no `RPATH` is present, the
+resolution has to happen in the ELF itself.
+
+#### The DT_NEEDED redirect
+
+`libremotedisplay_wfd.so` is the single importer, so the patch gives each donor
+library a private name and rewires the chain:
+
+```sh
+patchelf --set-soname "libaudioclient_wfd_compat.so" "$WFD_AUDIO_COMPAT"
+patchelf --set-soname "libnblog_wfd_compat.so" "$WFD_AUDIO_NBLOG_COMPAT"
+patchelf --set-soname "android.media.audio.common.types-V4-cpp-wfd_compat.so" \
+    "$WFD_AUDIO_TYPES_COMPAT"
+patchelf --replace-needed "android.media.audio.common.types-V4-cpp.so" \
+    "android.media.audio.common.types-V4-cpp-wfd_compat.so" "$WFD_AUDIO_COMPAT"
+patchelf --replace-needed "libnblog.so" "libnblog_wfd_compat.so" \
+    "$WFD_AUDIO_COMPAT"
+patchelf --replace-needed "libaudioclient.so" "libaudioclient_wfd_compat.so" \
+    "$WFD_AUDIO_WFD_LIB"
+```
+
+`libaudioclient_wfd_compat.so` must also repoint its own two missing
+dependencies, otherwise the chain still asks the default path for
+`android.media.audio.common.types-V4-cpp.so` and `libnblog.so`, which the target
+does not ship. Its other 33 `DT_NEEDED` entries resolve normally in the target,
+so only those two are touched.
+
+This is the same isolation trick the target suspend bridge already uses in
+`patches/miscs`, which gives `libbase` and `android.system.suspend.control` a
+`-compat` SONAME and repoints only the daemon that needs them.
+
+The patch asserts three things after rewriting, so a silent partial patch fails
+the build instead of shipping:
+
+- the donor still exports the exact symbol, matched with
+  `awk '{ print $NF }' | grep -qxF "$WFD_AUDIO_TRACK_SYMBOL"`. Whole-line
+  matching is what makes the check reject the Android 17 library instead of
+  accepting it as a substring;
+- `libremotedisplay_wfd.so` still imports it as `UND`, proving the repoint did
+  not drop the import;
+- `libremotedisplay_wfd.so` links against the compat name.
+
+The `HEX_PATCH` on `libremotedisplay_wfd.so` runs before this, and it is an
+in-place same-length replacement, so `patchelf` afterwards preserves the patched
+`sendM3` bytes.
 
 The donor follows the same layout as the other prebuilt donors, `dm3qxxx`
 being the reference: the tree mirrors the target paths, and it carries its own
 `fs_config-system` and `file_context-system` metadata files. The patch
-therefore calls `ADD_TO_WORK_DIR "r0sxxx" "system" "system/lib/wfd/<lib>"` with
-no explicit owner, mode or label, exactly like the SPen patch does with
+therefore calls `ADD_TO_WORK_DIR "r0sxxx" "system" "system/lib/<lib>"` with no
+explicit owner, mode or label, exactly like the SPen patch does with
 `dm3qxxx`. In `ADD_TO_WORK_DIR`, an explicit mode and label take priority, but
-when they are omitted the entry is looked up in the donor's own metadata
-files, so those files are authoritative and not decorative.
-
-The donor layout puts the libraries under `system/lib/wfd/` rather than
-`system/lib/`, which is what makes the donor path and the target path the same
-string. For a `system` partition whose donor has no `system/system` directory,
-`ADD_TO_WORK_DIR` strips the leading `system/` from the requested file and
-resolves both sides: the source to `system/lib/wfd/<lib>` in the donor, and the
-destination to `$WORK_DIR/system/system/lib/wfd/<lib>`, which is the
-`/system/lib/wfd` the `rc` refers to.
+when they are omitted the entry is looked up in the donor's own metadata files,
+so those files are authoritative and not decorative. The donor stores the
+libraries under their final `-compat` names, so donor path and target path are
+the same string.
 
 `prebuilts/samsung/r0sxxx/fs_config-system`:
 
 ```text
 system/lib 0 0 755 capabilities=0x0
-system/lib/wfd 0 0 755 capabilities=0x0
-system/lib/wfd/libaudioclient.so 0 0 644 capabilities=0x0
-system/lib/wfd/libnblog.so 0 0 644 capabilities=0x0
-system/lib/wfd/android.media.audio.common.types-V4-cpp.so 0 0 644 capabilities=0x0
+system/lib/libaudioclient_wfd_compat.so 0 0 644 capabilities=0x0
+system/lib/libnblog_wfd_compat.so 0 0 644 capabilities=0x0
+system/lib/android.media.audio.common.types-V4-cpp-wfd_compat.so 0 0 644 capabilities=0x0
 ```
 
 `prebuilts/samsung/r0sxxx/file_context-system`:
 
 ```text
 /system/lib u:object_r:system_lib_file:s0
-/system/lib/wfd u:object_r:system_lib_file:s0
-/system/lib/wfd/libaudioclient\.so u:object_r:system_lib_file:s0
-/system/lib/wfd/libnblog\.so u:object_r:system_lib_file:s0
-/system/lib/wfd/android\.media\.audio\.common\.types-V4-cpp\.so u:object_r:system_lib_file:s0
+/system/lib/libaudioclient_wfd_compat\.so u:object_r:system_lib_file:s0
+/system/lib/libnblog_wfd_compat\.so u:object_r:system_lib_file:s0
+/system/lib/android\.media\.audio\.common\.types-V4-cpp-wfd_compat\.so u:object_r:system_lib_file:s0
 ```
 
 `u:object_r:system_lib_file:s0` is the correct label: it is what the rest of
 `/system/lib` uses, so the new files inherit the same SELinux context and no
 policy change is needed. The escaping is the one `_HANDLE_SPECIAL_CHARS`
 applies, and it is required, since `ADD_TO_WORK_DIR` greps the donor for the
-already-escaped form. The directory entries are required as well, since the
-mount image carries the whole path.
+already-escaped form. The directory entry is required as well, since the mount
+image carries the whole path.
 
 Unlike a factory firmware donor, this tree has no `.current` file.
 `update_prebuilt_blobs.sh` only uses that for donors extracted by the
@@ -3988,19 +4053,24 @@ rather than from a factory package, so there is nothing for it to record.
 
 Validated so far: `bash -n`, the exact-symbol check accepting the donor and
 rejecting the target library, the two missing-dependency count, a sandboxed
-real `ADD_TO_WORK_DIR` producing the entries above from the donor's own
-metadata files, and a negative test confirming the donor files win: changing
-`644` to `600` and the label to `system_file` in a throwaway copy of the donor
-changed the generated output the same way, with no fallback warning. The `rc`
-injection is idempotent. The existing WFD harness still passes 13 of 13.
+real `ADD_TO_WORK_DIR` producing the entries above from the donor's own metadata
+files, a negative test confirming the donor files win, and the full patchelf
+chain reproduced on a copy: every `SONAME` and `DT_NEEDED` lands on the
+`-compat` name, the old constructor stays `UND` in `libremotedisplay_wfd.so` and
+defined in the compat library, the `sendM3` hex patch survives, and all four
+files stay ELF32. The existing WFD harness still passes 13 of 13.
 
-Verified by hand on the device: with the same three libraries in
-`LD_LIBRARY_PATH`, `/system/bin/remotedisplay` starts, stays alive and logs
-`RemoteDisplayService created`, with no fatal and no linker error. That test
-used `/data/local/tmp/wfdtest`, so it does not prove the libraries are visible
-at `/system/lib/wfd` after the EROFS mount. This is the first thing to check
-in `logcat` after a rebuild: if the init-run service still fails, the
-private directory is not being seen and the approach has to change.
+Verified on the device with the real artifacts: with the patched
+`libremotedisplay_wfd.so` and the three compat libraries visible to the linker,
+`/system/bin/remotedisplay` stays alive instead of exiting 1, no linker error is
+logged, and `/proc/<pid>/maps` shows `libaudioclient_wfd_compat.so`,
+`libnblog_wfd_compat.so` and
+`android.media.audio.common.types-V4-cpp-wfd_compat.so` loaded while the
+target's own `/system/lib/libaudioclient.so` and V5 types library remain
+untouched. That run used a temporary bind mount solely to place the files in a
+namespace-permitted directory, and it was unmounted afterwards; it is a test
+aid, not part of the build. The final image carries the files directly, with no
+bind mount and no `setenv` in the `rc`.
 
-Not yet through a full build. The init-run service only picks this up after a
-rebuild and a reboot.
+Not yet through a full build, and not yet verified with the init-run service
+after a reboot. That is the next step.
