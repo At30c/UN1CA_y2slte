@@ -91,16 +91,45 @@ if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 36 ]]; then
 
     while [ -f "$RAMPART_WALK" ]; do
         if grep -q "^\.field public final d:Landroid/content/Context;" "$RAMPART_WALK"; then
-            RAMPART_CONTEXT_CLASS="L$(basename "$RAMPART_WALK" .smali | tr '/' '.')/;"
+            for RAMPART_ROOT in "$RAMPART_DECODE_DIR"/smali*; do
+                [ -d "$RAMPART_ROOT" ] || continue
+
+                case "$RAMPART_WALK" in
+                    "$RAMPART_ROOT"/*)
+                        RAMPART_CONTEXT_CLASS="L$(printf '%s' \
+                            "${RAMPART_WALK#"$RAMPART_ROOT"/}" |
+                            sed 's|\.smali$||');"
+                        ;;
+                esac
+
+                [ -n "$RAMPART_CONTEXT_CLASS" ] && break
+            done
+
             break
         fi
 
-        RAMPART_WALK="$(awk '
+        RAMPART_SUPER="$(awk '
             /^\.super / {
-                print "'"$RAMPART_DECODE_DIR"'/smali/" substr($2, 2) ".smali"
+                super = $2
+                sub(/^L/, "", super)
+                sub(/;$/, "", super)
+                print super
                 exit
             }
         ' "$RAMPART_WALK")"
+
+        [ -n "$RAMPART_SUPER" ] || break
+
+        RAMPART_WALK=""
+
+        for RAMPART_ROOT in "$RAMPART_DECODE_DIR"/smali*; do
+            [ -d "$RAMPART_ROOT" ] || continue
+
+            if [ -f "$RAMPART_ROOT/$RAMPART_SUPER.smali" ]; then
+                RAMPART_WALK="$RAMPART_ROOT/$RAMPART_SUPER.smali"
+                break
+            fi
+        done
     done
 
     [ -n "$RAMPART_CONTEXT_CLASS" ] || \
@@ -171,6 +200,7 @@ if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 36 ]]; then
     unset RAMPART_APK RAMPART_DECODE_DIR RAMPART_DEVICE_CONFIG \
         RAMPART_UNLOCK_METHOD RAMPART_BOOT_HANDLER RAMPART_BOOT_METHOD \
         RAMPART_BOOT_HANDLER_REL RAMPART_SETTINGS_HELPER \
-        RAMPART_SETTINGS_CLASS RAMPART_CONTEXT_CLASS RAMPART_WALK
+        RAMPART_SETTINGS_CLASS RAMPART_CONTEXT_CLASS RAMPART_WALK \
+        RAMPART_SUPER RAMPART_ROOT
     LOG_STEP_OUT
 fi
