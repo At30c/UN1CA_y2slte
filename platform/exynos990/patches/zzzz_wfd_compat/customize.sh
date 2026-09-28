@@ -570,6 +570,173 @@ else
     LOG "  - mapper 2.1 narrowed to ARM64, mapper 4.0 passthrough added for ARM32"
 fi
 
+# ---------------------------------------------------------------------------
+# android.hardware.graphics.allocator@4.0
+# ---------------------------------------------------------------------------
+# Gralloc4 is a pair: the mapper and the allocator must be the same version.
+# Registering only the mapper moved the failure one step down the stack rather
+# than removing it, which the previous build confirmed:
+#
+#   [HIDL_FETCH_IMapper] android.hardware.graphics.mapper@4.0: Loaded Mapper successfully.
+#   Gralloc4: allocator 4.x is not supported
+#   GraphicBufferAllocator: Failed to load matching allocator for mapper version 4
+#   Fatal signal 6 (SIGABRT) ... pid 25195 (remotedisplay)
+#
+# "allocator 4.x is not supported" reads like the harmless fallback notice that
+# the 64-bit side logs all day for the mapper, and it is worth being explicit
+# that it is not: that message only ever reports a failed lookup, and what makes
+# it fatal is the absence of any alternative. 64-bit has allocator 2.0 to fall
+# back to, so its identical-looking notice costs nothing. The 32-bit
+# remotedisplay has no fallback at all, and libui only accepts an allocator
+# matching the mapper version, hence the SIGABRT.
+#
+# Unlike the mapper, the allocator is not a passthrough. The S22 ships it as a
+# real hwbinder service, android.hardware.graphics.allocator@4.0-service-sgr,
+# running as vendor.gralloc-4-0. That is what makes it usable here despite the
+# arch split: the service is aarch64 while remotedisplay is 32-bit, but hwbinder
+# is IPC, so the 32-bit client binds the 64-bit service over binder and never
+# maps its code. The mapper could not be done this way, which is why it stayed a
+# passthrough and needed the 32-bit build of the implementation.
+#
+# The 2.0 declaration is left untouched. It carries no arch attribute, so it
+# keeps serving the 64-bit SurfaceFlinger exactly as before, and the two coexist
+# because they are different HAL versions.
+WFD_ALLOC_SERVICE="bin/hw/android.hardware.graphics.allocator@4.0-service-sgr"
+WFD_ALLOC_RC="etc/init/android.hardware.graphics.allocator@4.0-service-sgr.rc"
+WFD_ALLOC_DONOR="$SRC_DIR/prebuilts/samsung/r0sxxx/vendor"
+
+if [ ! -f "$WFD_ALLOC_DONOR/$WFD_ALLOC_SERVICE" ]; then
+    ABORT "Missing ARM64 allocator 4.0 donor service: vendor/$WFD_ALLOC_SERVICE"
+    return 1
+fi
+if ! LC_ALL=C readelf -h "$WFD_ALLOC_DONOR/$WFD_ALLOC_SERVICE" 2>/dev/null | grep -q 'ELF64'; then
+    ABORT "Allocator 4.0 donor service is not ELF64: $WFD_ALLOC_SERVICE"
+    return 1
+fi
+# HIDL_FETCH is how hwservicemanager finds the interface in a registered
+# service binary. Its absence means the service would start and then fail to
+# register, leaving the 32-bit client with nothing to bind to.
+if ! strings "$WFD_ALLOC_DONOR/$WFD_ALLOC_SERVICE" 2>/dev/null | grep -q 'HIDL_FETCH'; then
+    ABORT "Allocator 4.0 donor service does not export HIDL_FETCH"
+    return 1
+fi
+
+# The 64-bit libraries the service links against. /system/lib64 already carries
+# libbase, libcutils, liblog, libutils and the allocator 4.0 HIDL stub, and
+# /vendor/lib64 already carries libion_exynos, so those are not donated. The
+# remaining four are absent from the target's vendor tree even though its own
+# allocator 2.0 service needs the same gralloc types, because that service
+# resolves them out of /system/lib64 through the default namespace. A service
+# registered with the vendor namespace cannot rely on that, so the copies go to
+# /vendor/lib64 where the namespace can actually see them.
+WFD_ALLOC_LIBS="
+lib64/libeis_utils.so
+lib64/libgralloctypes.so
+lib64/libhardware.so
+lib64/libhidlbase.so
+"
+for WFD_ALLOC_LIB in $WFD_ALLOC_LIBS; do
+    WFD_ALLOC_SRC="$WFD_ALLOC_DONOR/$WFD_ALLOC_LIB"
+    if [ ! -f "$WFD_ALLOC_SRC" ]; then
+        ABORT "Missing ARM64 allocator donor lib: vendor/$WFD_ALLOC_LIB"
+        return 1
+    fi
+    if ! LC_ALL=C readelf -h "$WFD_ALLOC_SRC" 2>/dev/null | grep -q 'ELF64'; then
+        ABORT "Allocator donor lib is not ELF64: $WFD_ALLOC_LIB"
+        return 1
+    fi
+    ADD_TO_WORK_DIR "r0sxxx" "vendor" "$WFD_ALLOC_LIB" \
+        0 2000 644 "u:object_r:same_process_hal_file:s0" || return 1
+done
+
+ADD_TO_WORK_DIR "r0sxxx" "vendor" "$WFD_ALLOC_SERVICE" \
+    0 2000 755 "u:object_r:hal_graphics_allocator_default_exec:s0" || return 1
+ADD_TO_WORK_DIR "r0sxxx" "vendor" "$WFD_ALLOC_RC" \
+    0 0 644 "u:object_r:vendor_file:s0" || return 1
+
+# A vendor service that cannot resolve one of its DT_NEEDED entries will not
+# start, and init will silently respawn it. Walk the service's own graph so the
+# build fails here instead of shipping a phone whose DeX never allocates.
+WFD_ALLOC_WORK="$WORK_DIR/vendor/$WFD_ALLOC_SERVICE"
+if [ ! -f "$WFD_ALLOC_WORK" ]; then
+    ABORT "Allocator 4.0 service was not staged into the work directory"
+    return 1
+fi
+while read -r WFD_ALLOC_NEEDED; do
+    case "$WFD_ALLOC_NEEDED" in
+        libc.so|libdl.so|libdl_android.so|libm.so|libc++.so)
+            continue
+            ;;
+    esac
+    if [ -f "$WORK_DIR/vendor/lib64/$WFD_ALLOC_NEEDED" ] || \
+            [ -f "$WORK_DIR/system/system/lib64/$WFD_ALLOC_NEEDED" ]; then
+        continue
+    fi
+    ABORT "Allocator 4.0 service needs $WFD_ALLOC_NEEDED, which is in neither /vendor/lib64 nor /system/lib64"
+    return 1
+done <<EOF
+$(readelf -d "$WFD_ALLOC_WORK" 2>/dev/null | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')
+EOF
+
+# The service is a hwbinder HAL, so the declaration is transport-level and
+# carries no arch, exactly like the 2.0 entry it sits next to. Selecting the
+# 2.0 block by its own <name> keeps the rewrite from touching anything else in
+# the manifest.
+if ! grep -qF '<fqname>@4.0::IAllocator/default</fqname>' "$WFD_VINTF"; then
+    WFD_VINTF_ALLOC='    <hal format="hidl">
+        <name>android.hardware.graphics.allocator</name>
+        <transport>hwbinder</transport>
+        <version>4.0</version>
+        <interface>
+            <name>IAllocator</name>
+            <instance>default</instance>
+        </interface>
+        <fqname>@4.0::IAllocator/default</fqname>
+    </hal>'
+
+    WFD_VINTF_TMP="$WFD_VINTF.zzwfd.tmp"
+    awk -v add40="$WFD_VINTF_ALLOC" '
+        /<hal[ >]/ { inblock = 1; blk = $0 ORS; next }
+        inblock {
+            blk = blk $0 ORS
+            if ($0 ~ /<\/hal>/) {
+                if (blk ~ /<name>android\.hardware\.graphics\.allocator<\/name>/ &&
+                        blk !~ /@4\.0::IAllocator/) {
+                    printf "%s", blk
+                    printf "%s\n", add40
+                } else {
+                    printf "%s", blk
+                }
+                inblock = 0
+                blk = ""
+            }
+            next
+        }
+        { print }
+    ' "$WFD_VINTF" > "$WFD_VINTF_TMP" || {
+        ABORT "Failed to rewrite the allocator block in VINTF"
+        rm -f "$WFD_VINTF_TMP"
+        return 1
+    }
+
+    # The 2.0 entry must survive untouched for ARM64, and the new 4.0 entry
+    # must be the only allocator 4.0 in the file.
+    if [ "$(grep -cF '<fqname>@2.0::IAllocator/default</fqname>' "$WFD_VINTF_TMP")" != "1" ] || \
+            [ "$(grep -cF '<fqname>@4.0::IAllocator/default</fqname>' "$WFD_VINTF_TMP")" != "1" ]; then
+        ABORT "VINTF rewrite did not produce exactly one 2.0 and one 4.0 allocator entry"
+        rm -f "$WFD_VINTF_TMP"
+        return 1
+    fi
+
+    cat "$WFD_VINTF_TMP" > "$WFD_VINTF" || {
+        ABORT "Failed to install the rewritten allocator VINTF"
+        rm -f "$WFD_VINTF_TMP"
+        return 1
+    }
+    rm -f "$WFD_VINTF_TMP"
+    LOG "  - allocator 4.0 hwbinder service declared alongside the existing 2.0"
+fi
+
 # Reject incomplete or mixed-architecture dependency graphs during the build.
 declare -A ARM32_WFD_VALIDATED=()
 
@@ -628,7 +795,9 @@ unset R9S_WFD_LIBS R9S_WFD_LIB R9S_WFD_64_REMOVE R9S_WFD_64_LIB \
     WFD_AUDIO_NBLOG_COMPAT WFD_AUDIO_WFD_LIB \
     WFD_GRALLOC_LIBS WFD_GRALLOC_DONOR WFD_GRALLOC_LIB WFD_GRALLOC_SRC \
     WFD_GRALLOC_IMPL WFD_GRALLOC_STUB WFD_GRALLOC_SYM WFD_GRALLOC_MISSING \
-    WFD_VINTF WFD_VINTF_NEW WFD_VINTF_TMP WFD_VINTF_FOUND
+    WFD_VINTF WFD_VINTF_NEW WFD_VINTF_TMP WFD_VINTF_FOUND \
+    WFD_ALLOC_SERVICE WFD_ALLOC_RC WFD_ALLOC_DONOR WFD_ALLOC_LIBS WFD_ALLOC_LIB \
+    WFD_ALLOC_SRC WFD_ALLOC_WORK WFD_ALLOC_NEEDED WFD_VINTF_ALLOC
 unset -f ADD_R11S_WFD_LIB VALIDATE_ARM32_WFD_ELF
 
 LOG_STEP_OUT

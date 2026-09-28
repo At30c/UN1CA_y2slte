@@ -1,3 +1,10 @@
 vendor/lib/hw/android.hardware.graphics.mapper@4.0-impl-sgr.so 0 2000 644 capabilities=0x0
 vendor/lib/hw/gralloc.default.so 0 2000 644 capabilities=0x0
 vendor/lib/libeis_utils.so 0 2000 644 capabilities=0x0
+vendor/bin/hw/android.hardware.graphics.allocator@4.0-service-sgr 0 2000 755 capabilities=0x0
+vendor/lib64/libeis_utils.so 0 2000 644 capabilities=0x0
+vendor/lib64/libgralloctypes.so 0 2000 644 capabilities=0x0
+vendor/lib64/libhardware.so 0 2000 644 capabilities=0x0
+vendor/lib64/libhidlbase.so 0 2000 644 capabilities=0x0
+vendor/lib64/libion_exynos.so 0 2000 644 capabilities=0x0
+vendor/etc/init/android.hardware.graphics.allocator@4.0-service-sgr.rc 0 0 644 capabilities=0x0

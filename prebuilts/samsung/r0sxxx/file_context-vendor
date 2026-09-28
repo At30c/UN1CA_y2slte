@@ -1,3 +1,10 @@
 /vendor/lib/hw/android\.hardware\.graphics\.mapper@4\.0-impl-sgr\.so u:object_r:same_process_hal_file:s0
 /vendor/lib/hw/gralloc\.default\.so u:object_r:same_process_hal_file:s0
 /vendor/lib/libeis_utils\.so u:object_r:same_process_hal_file:s0
+/vendor/bin/hw/android\.hardware\.graphics\.allocator@4\.0-service-sgr u:object_r:hal_graphics_allocator_default_exec:s0
+/vendor/lib64/libeis_utils\.so u:object_r:same_process_hal_file:s0
+/vendor/lib64/libgralloctypes\.so u:object_r:same_process_hal_file:s0
+/vendor/lib64/libhardware\.so u:object_r:same_process_hal_file:s0
+/vendor/lib64/libhidlbase\.so u:object_r:same_process_hal_file:s0
+/vendor/lib64/libion_exynos\.so u:object_r:same_process_hal_file:s0
+/vendor/etc/init/android\.hardware\.graphics\.allocator@4\.0-service-sgr\.rc u:object_r:vendor_file:s0
