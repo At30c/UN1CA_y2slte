@@ -6,5 +6,4 @@
 /vendor/lib64/libgralloctypes\.so u:object_r:same_process_hal_file:s0
 /vendor/lib64/libhardware\.so u:object_r:same_process_hal_file:s0
 /vendor/lib64/libhidlbase\.so u:object_r:same_process_hal_file:s0
-/vendor/lib64/libion_exynos\.so u:object_r:same_process_hal_file:s0
 /vendor/etc/init/android\.hardware\.graphics\.allocator@4\.0-service-sgr\.rc u:object_r:vendor_file:s0

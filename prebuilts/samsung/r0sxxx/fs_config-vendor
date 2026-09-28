@@ -6,5 +6,4 @@ vendor/lib64/libeis_utils.so 0 2000 644 capabilities=0x0
 vendor/lib64/libgralloctypes.so 0 2000 644 capabilities=0x0
 vendor/lib64/libhardware.so 0 2000 644 capabilities=0x0
 vendor/lib64/libhidlbase.so 0 2000 644 capabilities=0x0
-vendor/lib64/libion_exynos.so 0 2000 644 capabilities=0x0
 vendor/etc/init/android.hardware.graphics.allocator@4.0-service-sgr.rc 0 0 644 capabilities=0x0

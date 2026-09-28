@@ -622,13 +622,22 @@ if ! strings "$WFD_ALLOC_DONOR/$WFD_ALLOC_SERVICE" 2>/dev/null | grep -q 'HIDL_F
 fi
 
 # The 64-bit libraries the service links against. /system/lib64 already carries
-# libbase, libcutils, liblog, libutils and the allocator 4.0 HIDL stub, and
-# /vendor/lib64 already carries libion_exynos, so those are not donated. The
-# remaining four are absent from the target's vendor tree even though its own
-# allocator 2.0 service needs the same gralloc types, because that service
-# resolves them out of /system/lib64 through the default namespace. A service
-# registered with the vendor namespace cannot rely on that, so the copies go to
-# /vendor/lib64 where the namespace can actually see them.
+# libbase, libcutils, liblog, libutils and the allocator 4.0 HIDL stub, so those
+# are not donated. The remaining four are absent from the target's vendor tree
+# even though its own allocator 2.0 service needs the same gralloc types, because
+# that service resolves them out of /system/lib64 through the default namespace.
+# A service registered with the vendor namespace cannot rely on that, so the
+# copies go to /vendor/lib64 where the namespace can actually see them.
+#
+# libion_exynos.so is not donated even though the service needs it. The target
+# already ships a 64-bit build in /vendor/lib64, so donating one would replace a
+# working library rather than fill a gap, and that library is shared with
+# gralloc.exynos990, libGLES_mali, libOpenCL, libgpudataproducer and the eden
+# runtime stub. The S22 build exports the same global set with the same soname
+# and every one of those consumers resolves against it, so the swap would very
+# likely link, but it would still be putting an Exynos 2400-era ION
+# implementation from different firmware underneath the GPU stack for no gain.
+# Leaving the target's own copy in place is strictly the lower-risk option.
 WFD_ALLOC_LIBS="
 lib64/libeis_utils.so
 lib64/libgralloctypes.so
