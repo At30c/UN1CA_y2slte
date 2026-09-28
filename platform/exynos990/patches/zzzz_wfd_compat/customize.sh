@@ -613,11 +613,26 @@ if ! LC_ALL=C readelf -h "$WFD_ALLOC_DONOR/$WFD_ALLOC_SERVICE" 2>/dev/null | gre
     ABORT "Allocator 4.0 donor service is not ELF64: $WFD_ALLOC_SERVICE"
     return 1
 fi
-# HIDL_FETCH is how hwservicemanager finds the interface in a registered
-# service binary. Its absence means the service would start and then fail to
-# register, leaving the 32-bit client with nothing to bind to.
-if ! strings "$WFD_ALLOC_DONOR/$WFD_ALLOC_SERVICE" 2>/dev/null | grep -q 'HIDL_FETCH'; then
-    ABORT "Allocator 4.0 donor service does not export HIDL_FETCH"
+# How a HIDL implementation publishes itself depends on how it is consumed, and
+# getting this backwards is easy because the two mechanisms are different.
+#
+# The mapper is a passthrough: the 32-bit client dlopen's the library and calls
+# HIDL_FETCH_IMapper in it, so that symbol is the one worth checking there.
+#
+# The allocator is a real hwbinder service binary, so hwservicemanager never
+# loads it; it starts, and main() registers the interface itself through
+# IAllocator::registerAsService. Looking for HIDL_FETCH in it was simply the
+# wrong symbol, and it aborted the build against a perfectly good donor. Check
+# the method the service actually calls, plus the interface it registers, so a
+# donor that stopped registering still fails here.
+if ! strings "$WFD_ALLOC_DONOR/$WFD_ALLOC_SERVICE" 2>/dev/null | LC_ALL=C c++filt 2>/dev/null | \
+        grep -q 'IAllocator::registerAsService'; then
+    ABORT "Allocator 4.0 donor service does not register IAllocator::registerAsService"
+    return 1
+fi
+if ! strings "$WFD_ALLOC_DONOR/$WFD_ALLOC_SERVICE" 2>/dev/null | \
+        grep -q 'android.hardware.graphics.allocator@4.0.so'; then
+    ABORT "Allocator 4.0 donor service does not link the allocator 4.0 HIDL library"
     return 1
 fi
 
@@ -666,11 +681,23 @@ ADD_TO_WORK_DIR "r0sxxx" "vendor" "$WFD_ALLOC_RC" \
 # A vendor service that cannot resolve one of its DT_NEEDED entries will not
 # start, and init will silently respawn it. Walk the service's own graph so the
 # build fails here instead of shipping a phone whose DeX never allocates.
+#
+# LC_ALL=C matters on the readelf side: the tool localises its output, and on
+# this build it prints "Biblioteca Compartilhada" rather than "Shared library",
+# which made the sed below match nothing and turned this loop into a no-op that
+# silently approved every donor.
 WFD_ALLOC_WORK="$WORK_DIR/vendor/$WFD_ALLOC_SERVICE"
 if [ ! -f "$WFD_ALLOC_WORK" ]; then
     ABORT "Allocator 4.0 service was not staged into the work directory"
     return 1
 fi
+WFD_ALLOC_NEEDED_LIST="$(LC_ALL=C readelf -d "$WFD_ALLOC_WORK" 2>/dev/null | \
+    LC_ALL=C sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')"
+if [ -z "$WFD_ALLOC_NEEDED_LIST" ]; then
+    ABORT "Could not read DT_NEEDED from the allocator 4.0 service, refusing to skip the closure check"
+    return 1
+fi
+
 while read -r WFD_ALLOC_NEEDED; do
     case "$WFD_ALLOC_NEEDED" in
         libc.so|libdl.so|libdl_android.so|libm.so|libc++.so)
@@ -684,7 +711,7 @@ while read -r WFD_ALLOC_NEEDED; do
     ABORT "Allocator 4.0 service needs $WFD_ALLOC_NEEDED, which is in neither /vendor/lib64 nor /system/lib64"
     return 1
 done <<EOF
-$(readelf -d "$WFD_ALLOC_WORK" 2>/dev/null | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')
+$WFD_ALLOC_NEEDED_LIST
 EOF
 
 # The service is a hwbinder HAL, so the declaration is transport-level and
