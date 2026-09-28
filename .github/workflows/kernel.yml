@@ -72,7 +72,7 @@ jobs:
 
       - name: Build ExtremeKernel
         run: |
-          KERNEL_REPO="https://github.com/At30c/SSM_990v2BYEXTREME/"
+          KERNEL_REPO="https://github.com/Master37373/SSM_990v2BYEXTREME"
           KERNEL_TMP_DIR="$HOME/kernel_build"
 
           git clone "$KERNEL_REPO" --single-branch "$KERNEL_TMP_DIR"
@@ -154,4 +154,4 @@ jobs:
             Auto-updated ExtremeKernel prebuilt zip for `${{ matrix.target }}`.
 
             Kernel commit: `${{ env.KERNEL_COMMIT }}`
-            Repo: https://github.com/At30c/SSM_990v2BYEXTREME/
+            Repo: https://github.com/Master37373/SSM_990v2BYEXTREME
