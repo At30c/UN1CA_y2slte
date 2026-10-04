@@ -40,6 +40,11 @@ SMALI_PATCH "system" "system/framework/services.jar" \
     "smali/com/android/server/knox/dar/DarManagerService.smali" "return" \
     'isDeviceRootKeyInstalled()Z' 'true'
 
+# Skip Knox key attestation in DarManagerService
+SMALI_PATCH "system" "system/framework/services.jar" \
+       "smali/com/android/server/knox/dar/DarManagerService.smali" "return" \
+       'isKnoxKeyInstallable()Z' 'true'
+
 # Disable root checks in StorageManagerService
 SMALI_PATCH "system" "system/framework/services.jar" \
     "smali/com/android/server/StorageManagerService.smali" "return" \
