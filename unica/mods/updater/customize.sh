@@ -11,6 +11,17 @@ fi
 
 ADD_TO_WORK_DIR "$MODPATH" "system" "."
 
+# Updater in die Zulassungsliste fuer Systemapps eintragen
+ALLOWED_PRELOAD="$WORK_DIR/system/system/etc/sysconfig/allowed-system-preload-apps.xml"
+if [ -f "$ALLOWED_PRELOAD" ]; then
+    if ! grep -q "com.artisan.updater" "$ALLOWED_PRELOAD"; then
+        LOG "- Adding com.artisan.updater to /system/system/etc/sysconfig/allowed-system-preload-apps.xml"
+        sed -i 's|</config>|    <allowed-system-preload package="com.artisan.updater"/>\n</config>|' "$ALLOWED_PRELOAD"
+    fi
+else
+    LOG "! allowed-system-preload-apps.xml not found, skipping"
+fi
+
 DECODE_APK "system" "system/priv-app/SecSettings/SecSettings.apk"
 
 LOG "- Patching /system/system/etc/security/otacerts.zip"
