@@ -259,6 +259,36 @@ LOG "- Rebuilding apex_payload.img"
 
 rm -rf "$PAYLOAD" "$PATCH_TMP/file_contexts" "$PATCH_TMP/fs_config"
 
+# Keep Google Play system updates away from this (self-signed) module: Play only
+# offers a module when its version is higher than the installed one, and a
+# Google-signed Tethering APEX would be rejected and break the whole update.
+LOG "- Raising Tethering APEX version above any Google release"
+python3 - "$DECODED/unknown/apex_manifest.pb" << 'PYEOF' || { LOGE "Failed to raise Tethering APEX version"; return 1; }
+import sys
+path = sys.argv[1]
+b = bytearray(open(path, "rb").read())
+# ApexManifest: field 1 (name, tag 0x0a), field 2 (version, tag 0x10, varint)
+assert b[0] == 0x0a, "unexpected apex_manifest.pb layout (name)"
+i = 2 + b[1]
+assert b[i] == 0x10, "unexpected apex_manifest.pb layout (version)"
+j = i + 1
+while b[j] & 0x80:
+    j += 1
+j += 1
+v = 2000000000
+enc = bytearray()
+while True:
+    byte = v & 0x7f
+    v >>= 7
+    if v:
+        enc.append(byte | 0x80)
+    else:
+        enc.append(byte)
+        break
+b[i + 1:j] = enc
+open(path, "wb").write(b)
+PYEOF
+
 LOG "- Signing Tethering APEX payload"
 SALT="$(sha256sum "$DECODED/unknown/apex_manifest.pb" | cut -d ' ' -f 1)"
 EVAL "avbtool add_hashtree_footer --do_not_generate_fec --algorithm \"SHA256_RSA4096\" --hash_algorithm \"sha256\" --key \"$SRC_DIR/security/avb/testkey_rsa4096.pem\" --prop \"apex.key:com.android.tethering\" --salt \"$SALT\" --image \"$DECODED/unknown/apex_payload.img\""
