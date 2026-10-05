@@ -140,6 +140,26 @@ jobs:
         run: |
           source ./buildenv.sh ${{ matrix.target }}
           ./scripts/make_rom.sh
+          
+      - name: Save tethering binaries for analysis
+        if: failure()
+        run: |
+          mkdir -p dbg
+          NB=$(sudo find /home/runner /tmp /mnt -type f -name netbpfload -path '*tethering_legacy*' 2>/dev/null | head -n 1)
+          ND=$(sudo find /home/runner /tmp /mnt -type f -name libnetd_updatable.so -path '*tethering_legacy*' 2>/dev/null | head -n 1)
+          [ -n "$NB" ] && sudo cp "$NB" dbg/netbpfload
+          [ -n "$ND" ] && sudo cp "$ND" dbg/libnetd_updatable.so
+          sudo chown -R "$(id -u):$(id -g)" dbg
+          ls -l dbg
+          sha256sum dbg/* || true
+
+      - name: Upload tethering binaries
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tethering-binaries
+          path: dbg
+          if-no-files-found: warn
 
       - name: Upload to SourceForge (+ GitHub Release)
         if: github.event_name == 'workflow_dispatch'
