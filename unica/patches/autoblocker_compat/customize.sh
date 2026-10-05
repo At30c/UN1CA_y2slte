@@ -1,4 +1,4 @@
-if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 36 ]]; then
+if [[ "$SOURCE_PLATFORM_SDK_VERSION" -ge 999 ]]; then
     LOG_STEP_IN "- Disabling Auto Blocker"
 
     RAMPART_APK="system/app/Rampart/Rampart.apk"
