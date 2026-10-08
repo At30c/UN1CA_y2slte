@@ -156,7 +156,7 @@ elif [ "$ACTUAL_SHA256" = "$Q2_ONLY_PATCHED_85_SHA256" ]; then
 elif [ "$ACTUAL_SHA256" = "$PATCHED_85_SHA256" ]; then
     LOG "- NetBpfLoad One UI 8.5 kernel gate is already disabled"
     FINAL_SHA256="$PATCHED_85_SHA256"
-    elif [ "$ACTUAL_SHA256" = "$EXPECTED_NEW_SHA256" ]; then
+elif [ "$ACTUAL_SHA256" = "$EXPECTED_NEW_SHA256" ]; then
     # Newer One UI build: same 5.4 (25Q2) and 5.10 (25Q4) gates as One UI 8.5,
     # each guarded by "tbz wN, #0, <skip error block>". Make both jumps
     # unconditional so the error blocks are never entered.
