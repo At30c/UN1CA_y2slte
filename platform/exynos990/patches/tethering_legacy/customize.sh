@@ -4,6 +4,111 @@ CAPEX="$WORK_DIR/system/system/apex/com.google.android.tethering_compressed.apex
 PATCH_TMP="$TMP_DIR/tethering_legacy"
 DECODED="$PATCH_TMP/decoded"
 PAYLOAD="$DECODED/unknown/apex_payload"
+NEW_APEX_VERSION=2000000000
+
+APEX_VERSION_TOOL()
+{
+    python3 - "$@" << 'PYEOF'
+import sys, struct, zipfile, io
+
+def read_varint(b, j):
+    v = 0; s = 0
+    while True:
+        v |= (b[j] & 0x7f) << s; s += 7
+        if not b[j] & 0x80:
+            return v, j + 1
+        j += 1
+
+def enc_varint(v):
+    out = bytearray()
+    while True:
+        byte = v & 0x7f; v >>= 7
+        if v: out.append(byte | 0x80)
+        else:
+            out.append(byte); return bytes(out)
+
+def pb_version(b):
+    # ApexManifest: field 1 (name, 0x0a), field 2 (version, 0x10, varint)
+    assert b[0] == 0x0a, "unexpected apex_manifest.pb layout (name)"
+    i = 2 + b[1]
+    assert b[i] == 0x10, "unexpected apex_manifest.pb layout (version)"
+    v, end = read_varint(b, i + 1)
+    return v, i, end, bytes(b[2:2 + b[1]])
+
+def axml_attr(d, want="versionCode"):
+    """Returns (value, file offset of the 32-bit data field) of attribute 'want' on <manifest>."""
+    u16 = lambda o: struct.unpack_from('<H', d, o)[0]
+    u32 = lambda o: struct.unpack_from('<I', d, o)[0]
+    assert u16(0) == 0x0003, "not a binary XML file"
+    off, strings = 8, []
+    while off < len(d):
+        t, sz = u16(off), u32(off + 4)
+        if t == 0x0001:
+            cnt, flags, sbase = u32(off + 8), u32(off + 16), u32(off + 20)
+            utf8 = bool(flags & 0x100)
+            offs = [u32(off + 28 + 4 * k) for k in range(cnt)]
+            for k in range(cnt):
+                p = off + sbase + offs[k]
+                if utf8:
+                    p += 1 if d[p] < 0x80 else 2
+                    l2 = d[p]; p += 1 if l2 < 0x80 else 2
+                    strings.append(d[p:p + l2].decode('utf-8', 'replace'))
+                else:
+                    l = u16(p); p += 2
+                    strings.append(d[p:p + l * 2].decode('utf-16le', 'replace'))
+        elif t == 0x0102:
+            name = u32(off + 20)
+            a_start, a_size, a_cnt = u16(off + 24), u16(off + 26), u16(off + 28)
+            if name < len(strings) and strings[name] == "manifest":
+                for k in range(a_cnt):
+                    ao = off + 16 + a_start + k * a_size
+                    an = u32(ao + 4)
+                    if an < len(strings) and strings[an] == want and d[ao + 15] in (0x10, 0x11):
+                        return u32(ao + 16), ao + 16
+            break
+        off += sz
+    raise ValueError("attribute %s not found in AndroidManifest.xml" % want)
+
+def cmd_pb(path, newv):
+    b = bytearray(open(path, 'rb').read())
+    v, i, end, name = pb_version(b)
+    b[i + 1:end] = enc_varint(int(newv))
+    open(path, 'wb').write(b)
+    print("apex_manifest.pb: %d -> %d" % (v, int(newv)))
+
+def cmd_axml(path, newv):
+    d = bytearray(open(path, 'rb').read())
+    try:
+        v, pos = axml_attr(d)
+    except (ValueError, AssertionError) as e:
+        print("AndroidManifest.xml uebersprungen (%s): %s" % (e, path)); return
+    struct.pack_into('<I', d, pos, int(newv))
+    open(path, 'wb').write(d)
+    print("AndroidManifest.xml versionCode: %d -> %d (%s)" % (v, int(newv), path))
+
+def cmd_verify(apex, newv):
+    newv = int(newv)
+    z = zipfile.ZipFile(apex)
+    outer, _, _, name = pb_version(z.read('apex_manifest.pb'))
+    code = axml_attr(z.read('AndroidManifest.xml'))[0]
+    img = z.read('apex_payload.img')
+    prefix = b"\x0a" + bytes([len(name)]) + name + b"\x10"
+    inner, pos = [], 0
+    while True:
+        i = img.find(prefix, pos)
+        if i < 0: break
+        inner.append(read_varint(img, i + len(prefix))[0]); pos = i + 1
+    print("Version aussen (apex_manifest.pb)   :", outer)
+    print("Version Container (versionCode)     :", code)
+    print("Version innen (Nutzdaten-Abbild)    :", inner if inner else "nicht gefunden")
+    ok = outer == newv and code == newv and inner and all(x == newv for x in inner)
+    print("ERGEBNIS:", "alle drei Stellen == %d" % newv if ok else "INKONSISTENT, erwartet %d" % newv)
+    sys.exit(0 if ok else 1)
+
+if __name__ == "__main__":
+    {"pb": cmd_pb, "axml": cmd_axml, "verify": cmd_verify}[sys.argv[1]](*sys.argv[2:])
+PYEOF
+}
 
 if [ ! -f "$CAPEX" ]; then
     LOGE "Tethering CAPEX not found: ${CAPEX//$WORK_DIR/}"
@@ -251,7 +356,11 @@ if [ "$(sha256sum "$NETD_UPDATABLE" | cut -d ' ' -f 1)" != "$FINAL_NETD_SHA256" 
     LOGE "libnetd_updatable patch validation failed"
     return 1
 fi
-
+LOG "- Raising Tethering APEX version (manifest inside the payload)"
+APEX_VERSION_TOOL pb "$PAYLOAD/apex_manifest.pb" "$NEW_APEX_VERSION" || { LOGE "Failed to raise payload manifest version"; return 1; }
+if [ -f "$PAYLOAD/apex_manifest.json" ]; then
+    sed -i -E 's/("version"[[:space:]]*:[[:space:]]*)[0-9]+/\1'"$NEW_APEX_VERSION"'/' "$PAYLOAD/apex_manifest.json"
+fi
 LOG "- Rebuilding apex_payload.img"
 "$SRC_DIR/scripts/build_fs_image.sh" "ext4" --no-avb \
     -o "$DECODED/unknown/apex_payload.img" -p "system" \
@@ -289,6 +398,12 @@ b[i + 1:j] = enc
 open(path, "wb").write(b)
 PYEOF
 
+LOG "- Raising Tethering APEX version (container manifests)"
+APEX_VERSION_TOOL pb "$DECODED/unknown/apex_manifest.pb" "$NEW_APEX_VERSION" || { LOGE "Failed to raise Tethering APEX version"; return 1; }
+while IFS= read -r AXML; do
+    APEX_VERSION_TOOL axml "$AXML" "$NEW_APEX_VERSION"
+done < <(find "$DECODED" -maxdepth 2 -type f -name AndroidManifest.xml)
+
 LOG "- Signing Tethering APEX payload"
 SALT="$(sha256sum "$DECODED/unknown/apex_manifest.pb" | cut -d ' ' -f 1)"
 EVAL "avbtool add_hashtree_footer --do_not_generate_fec --algorithm \"SHA256_RSA4096\" --hash_algorithm \"sha256\" --key \"$SRC_DIR/security/avb/testkey_rsa4096.pem\" --prop \"apex.key:com.android.tethering\" --salt \"$SALT\" --image \"$DECODED/unknown/apex_payload.img\""
@@ -304,6 +419,9 @@ if [ ! -f "$BUILT_APEX" ]; then
     LOGE "Rebuilt Tethering APEX not found"
     return 1
 fi
+
+LOG "- Verifying Tethering APEX version consistency"
+APEX_VERSION_TOOL verify "$BUILT_APEX" "$NEW_APEX_VERSION" || { LOGE "Tethering APEX versions are inconsistent, aborting"; return 1; }
 
 CERT_PREFIX="aosp"
 if $ROM_IS_OFFICIAL; then
@@ -325,3 +443,6 @@ unset CAPEX PATCH_TMP DECODED PAYLOAD NETBPFLOAD EXPECTED_SHA256 PATCHED_SHA256 
     EXPECTED_NETD_85_SHA256 BROKEN_PATCHED_NETD_85_SHA256 \
     PATCHED_NETD_85_SHA256 ACTUAL_NETD_SHA256 FINAL_NETD_SHA256 SALT \
     BUILT_APEX CERT_PREFIX
+
+unset NEW_APEX_VERSION
+unset -f APEX_VERSION_TOOL
