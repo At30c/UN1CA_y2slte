@@ -2,10 +2,10 @@
 <roms>
   <rom channel="stable">
     <version>4.0.0</version>
-    <date>2026-10-02</date>
-    <filename>ArtisanROM_OFFICIAL_4.0.0_20261002_y2s-sign.zip</filename>
-    <part1>https://sourceforge.net/projects/masterrom/files/y2slte/ArtisanROM_OFFICIAL_4.0.0_20261002_y2s-sign.zip/download</part1>
-    <md5>5864a25f1700404fe5518b5bbc9a0cba</md5>
-    <size>7445668854</size>
+    <date>2026-10-07</date>
+    <filename>ArtisanROM_OFFICIAL_4.0.0_20261007_y2s-sign.zip</filename>
+    <part1>https://sourceforge.net/projects/masterrom/files/y2slte/ArtisanROM_OFFICIAL_4.0.0_20261007_y2s-sign.zip/download</part1>
+    <md5>d3a1a4941563c3590d82d7a1896f9a43</md5>
+    <size>7657119563</size>
   </rom>
 </roms>
